@@ -27,10 +27,10 @@ NETKEIBA_ID = st.secrets.get("NETKEIBA_ID", "")
 NETKEIBA_PASS = st.secrets.get("NETKEIBA_PASS", "")
 
 # デフォルト設定(app.py 側で set_race_params が呼ばれると書き換わる)
-YEAR = "2025"
-KAI = "04"
-PLACE = "02"
-DAY = "02"
+YEAR = "2026"
+KAI = "01"
+PLACE = "05"
+DAY = "01"
 
 BASE_URL = "https://s.keibabook.co.jp"
 

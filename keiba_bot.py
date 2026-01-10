@@ -27,10 +27,10 @@ NETKEIBA_ID = st.secrets.get("NETKEIBA_ID", "")
 NETKEIBA_PASS = st.secrets.get("NETKEIBA_PASS", "")
 
 # デフォルト設定(app.py 側で set_race_params が呼ばれると書き換わる)
-YEAR = "2026"
-KAI = "01"
-PLACE = "05"
-DAY = "01"
+YEAR = "2025"
+KAI = "04"
+PLACE = "02"
+DAY = "02"
 
 BASE_URL = "https://s.keibabook.co.jp"
 
@@ -572,7 +572,18 @@ def parse_syutuba(html: str) -> dict:
 def parse_netkeiba_speed_index(html: str) -> dict:
     """
     netkeiba speed.html の出馬表から指数を抜く。
-    戻り値:{ "1": {"index1":"70","index2":"54","index3":"無","course":"無","avg5":"無"}, ... }
+    HTML構造:
+    <td class="cellcolor_ sk__index1">
+        <span class="Sort_Function_Data_Hidden">1089</span>
+        <a href="...">89</a>  ← この89を取得
+    </td>
+    または
+    <td class="cellcolor_ sk__average_index">
+        <span class="Sort_Function_Data_Hidden">1086</span>
+        86*  ← このテキストを取得
+    </td>
+    
+    戻り値:{ "1": {"index1":"89","index2":"77","index3":"94","course":"無","avg5":"86"}, ... }
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -592,24 +603,29 @@ def parse_netkeiba_speed_index(html: str) -> dict:
 
         def cell_text(cell_class: str) -> str:
             """
-            指定されたクラス名のtdセルを探し、テキストを正規化して返す
+            指定されたクラス名のtdセルを探し、Sort_Function_Data_Hiddenの後のテキストを取得
             """
             td = tr.find("td", class_=lambda c: c and cell_class in c.split())
             if not td:
                 return "無"
             
-            # Sort_Function_Data_Hiddenスパンを除外してテキスト取得
-            # まず隠しスパンを削除
-            for hidden_span in td.find_all("span", class_="Sort_Function_Data_Hidden"):
-                hidden_span.decompose()
-            
-            # aタグがある場合はそのテキストを優先
-            a_tag = td.find("a")
-            if a_tag:
-                txt = a_tag.get_text(" ", strip=True)
+            # Sort_Function_Data_Hiddenスパンを見つける
+            hidden_span = td.find("span", class_="Sort_Function_Data_Hidden")
+            if hidden_span:
+                # 隠しスパンの後にaタグがあるか確認
+                a_tag = td.find("a")
+                if a_tag:
+                    # aタグのテキストを取得
+                    txt = a_tag.get_text(strip=True)
+                else:
+                    # aタグがない場合、隠しスパンを除去してテキスト取得
+                    hidden_span.decompose()
+                    txt = td.get_text(strip=True)
             else:
-                txt = td.get_text(" ", strip=True)
+                # 隠しスパンがない場合は普通にテキスト取得
+                txt = td.get_text(strip=True)
             
+            # 正規化して返す
             return normalize_netkeiba_index_cell(txt)
 
         out[umaban] = {

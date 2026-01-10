@@ -188,13 +188,41 @@ def save_history(
 # ==================================================
 def build_driver() -> webdriver.Chrome:
     options = Options()
+
+    # headless は netkeiba 側で弾かれることがあるので new を維持しつつ回避策を追加
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1280,2200")
+    options.add_argument("--window-size=1400,2400")
+
+    # bot判定されにくくする定番セット
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--lang=ja-JP")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(60)
+
+    # webdriver フラグを隠す（効くサイトもある）
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": """
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                """
+            },
+        )
+    except Exception:
+        pass
+
     return driver
 
 

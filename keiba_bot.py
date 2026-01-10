@@ -102,7 +102,6 @@ def normalize_netkeiba_index_cell(raw: str) -> str:
     # 1000が含まれる（または単体）なら「無」
     if any(n == "1000" for n in nums):
         # ただし "1070 70" のように1000以外の有効値がある場合は有効値を優先
-        # → 3桁以下があればそれを採用、なければ無
         short = [n for n in nums if len(n) <= 3 and n != "1000"]
         return short[-1] if short else "無"
 
@@ -111,7 +110,6 @@ def normalize_netkeiba_index_cell(raw: str) -> str:
     if short:
         return short[-1]
 
-    # フォールバック（本来は起きにくい）
     return "無"
 
 
@@ -257,7 +255,9 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
         id_el = None
         for how, sel in id_candidates:
             try:
-                id_el = WebDriverWait(driver, 5).until(EC.visibility_of_element_located((how, sel)))
+                id_el = WebDriverWait(driver, 5).until(
+                    EC.visibility_of_element_located((how, sel))
+                )
                 if id_el:
                     break
             except Exception:
@@ -266,7 +266,9 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
         pw_el = None
         for how, sel in pass_candidates:
             try:
-                pw_el = WebDriverWait(driver, 5).until(EC.visibility_of_element_located((how, sel)))
+                pw_el = WebDriverWait(driver, 5).until(
+                    EC.visibility_of_element_located((how, sel))
+                )
                 if pw_el:
                     break
             except Exception:
@@ -288,7 +290,9 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
         clicked = False
         for how, sel in btn_candidates:
             try:
-                btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((how, sel)))
+                btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((how, sel))
+                )
                 btn.click()
                 clicked = True
                 break
@@ -642,6 +646,156 @@ def keibabook_race_id_to_netkeiba_race_id(year: str, kai: str, place: str, day: 
 
 
 # ==================================================
+# ★追加：netkeiba 馬柱(5走) から「直近3走の結果概要」「休み明け(Rest)」を取得
+# ==================================================
+def _extract_past_cell_summary(past_td) -> str:
+    """
+    td.Past の中身を「概要」として短めに整形
+    """
+    if past_td is None:
+        return "（情報なし）"
+
+    # 主要ブロック
+    data01 = past_td.select_one(".Data01")
+    data02 = past_td.select_one(".Data02")
+    data03 = past_td.select_one(".Data03")
+    data05 = past_td.select_one(".Data05")
+    data06 = past_td.select_one(".Data06")
+    data07 = past_td.select_one(".Data07")
+
+    date_place = ""
+    raceno = ""
+    if data01:
+        spans = data01.find_all("span")
+        if len(spans) >= 1:
+            date_place = spans[0].get_text(" ", strip=True)
+        if len(spans) >= 2:
+            raceno = spans[1].get_text(" ", strip=True)
+
+    race_name = ""
+    if data02:
+        a = data02.find("a")
+        race_name = a.get_text(" ", strip=True) if a else data02.get_text(" ", strip=True)
+
+    line5 = data05.get_text(" ", strip=True) if data05 else ""
+    line3 = data03.get_text(" ", strip=True) if data03 else ""
+    line6 = data06.get_text(" ", strip=True) if data06 else ""
+    line7 = data07.get_text(" ", strip=True) if data07 else ""
+
+    parts = []
+    if date_place:
+        parts.append(date_place + (f" {raceno}R" if raceno else ""))
+    if race_name:
+        parts.append(race_name)
+    if line5:
+        parts.append(line5)
+    if line3:
+        parts.append(line3)
+    if line6:
+        parts.append(line6)
+    if line7:
+        parts.append(line7)
+
+    txt = " / ".join([p for p in parts if p]).strip()
+    return txt if txt else "（情報なし）"
+
+
+def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
+    """
+    shutuba_past.html（馬柱5走表示）から
+    - 直近3走（前走・2走・3走）の Past概要
+    - Rest（休み明け情報）
+    を抜く。
+
+    戻り値:
+      {
+        "1": {"past3": [str,str,str], "rest": "..." },
+        "2": {"past3": [...], "rest": "..." },
+        ...
+      }
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    table = soup.find("table", id="sort_table")
+    if not table or not table.tbody:
+        return {}
+
+    out = {}
+
+    rows = table.tbody.find_all("tr", class_=lambda c: c and "HorseList" in c.split(), recursive=False)
+    for tr in rows:
+        # 馬番（td class="Waku" のうち、classが "Waku" 単体のものが馬番になっていることが多い）
+        umaban = ""
+        waku_tds = tr.find_all("td", class_=lambda c: c and ("Waku" in c.split()), recursive=False)
+        # 例: <td class="Waku1">枠</td>, <td class="Waku">馬番</td> の順
+        # "Waku" 単体を優先
+        for td in waku_tds:
+            cls = td.get("class") or []
+            if cls == ["Waku"]:
+                umaban = re.sub(r"\D", "", td.get_text(" ", strip=True))
+                break
+        if not umaban and len(waku_tds) >= 2:
+            umaban = re.sub(r"\D", "", waku_tds[1].get_text(" ", strip=True))
+        if not umaban:
+            continue
+
+        # Rest（休み明け情報）
+        rest_txt = ""
+        rest_td = tr.find("td", class_=lambda c: c and ("Rest" in c.split()), recursive=False)
+        if rest_td:
+            # Data01 が複数あるので " / " で結合
+            items = [d.get_text(" ", strip=True) for d in rest_td.find_all(class_="Data01")]
+            rest_txt = " / ".join([x for x in items if x]).strip()
+            if not rest_txt:
+                rest_txt = rest_td.get_text(" ", strip=True)
+
+        # Past（直近3走）
+        past_tds = tr.find_all("td", class_=lambda c: c and ("Past" in c.split()), recursive=False)
+        past_summaries = []
+        for td in past_tds[:take_last_n]:
+            past_summaries.append(_extract_past_cell_summary(td))
+
+        # 足りない分は埋める（必ず3本にしたい場合）
+        while len(past_summaries) < take_last_n:
+            past_summaries.append("（情報なし）")
+
+        out[umaban] = {
+            "past3": past_summaries,
+            "rest": rest_txt or "（情報なし）",
+        }
+
+    return out
+
+
+def fetch_netkeiba_past5_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -> dict:
+    """
+    shutuba_past.html を開いて、
+    直近3走概要 + Rest情報 を辞書で返す
+    """
+    url = f"https://race.netkeiba.com/race/shutuba_past.html?race_id={netkeiba_race_id}&rf=shutuba_submenu"
+    driver.get(url)
+
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table#sort_table"))
+        )
+    except Exception:
+        pass
+
+    html = driver.page_source
+
+    # ログインが必要そうなら 1回だけログインして再取得
+    if ("無料会員登録" in html or "ログイン" in html) and NETKEIBA_ID and NETKEIBA_PASS:
+        ok = login_netkeiba(driver)
+        if ok:
+            driver.get(url)
+            time.sleep(0.8)
+            html = driver.page_source
+
+    return parse_netkeiba_shutuba_past5(html, take_last_n=3)
+
+
+# ==================================================
 # fetch（Selenium）競馬ブック
 # ==================================================
 def fetch_danwa_dict(driver, race_id: str):
@@ -845,7 +999,7 @@ def run_all_races(target_races=None):
             if netkeiba_logged_in:
                 st.success("✅ netkeiba ログイン完了")
             else:
-                st.warning("⚠️ netkeiba ログインは未確認（指数ページが閲覧可能なら取得できます）")
+                st.warning("⚠️ netkeiba ログインは未確認（閲覧可能なら取得できます）")
 
         for r in race_numbers:
             race_num = f"{r:02}"
@@ -882,8 +1036,17 @@ def run_all_races(target_races=None):
                     try:
                         speed_dict = fetch_netkeiba_speed_dict(driver, netkeiba_race_id)
                     except Exception as e:
-                        print("netkeiba fetch error:", e)
+                        print("netkeiba speed fetch error:", e)
                         speed_dict = {}
+
+                # ★A-4.5 netkeiba 馬柱(5走)：直近3走概要 + Rest（取れなくても続行）
+                past5_dict = {}
+                if netkeiba_race_id:
+                    try:
+                        past5_dict = fetch_netkeiba_past5_dict(driver, netkeiba_race_id)
+                    except Exception as e:
+                        print("netkeiba past5 fetch error:", e)
+                        past5_dict = {}
 
                 # A-5 結合（出馬表ベース）
                 merged = []
@@ -915,7 +1078,7 @@ def run_all_races(target_races=None):
                     if not d_comment:
                         d_comment = "（情報なし）"
 
-                    # 前走
+                    # 前走（競馬ブック：前走談話）
                     z_data = zenkoso_dict.get(umaban)
                     if not z_data:
                         alt = _find_by_name_key(zenkoso_dict, bamei)
@@ -936,7 +1099,7 @@ def run_all_races(target_races=None):
                     else:
                         prev_block = "  【前走】 新馬（前走情報なし）\n"
 
-                    # 調教
+                    # 調教（競馬ブック）
                     c = cyokyo_dict.get(umaban)
                     if not c:
                         c = _find_by_name_key(cyokyo_dict, bamei)
@@ -952,14 +1115,30 @@ def run_all_races(target_races=None):
 
                     # 指数（netkeiba）※すべて normalize 済みの dict になってるが念のため再正規化
                     sp = speed_dict.get(umaban, {}) if isinstance(speed_dict, dict) else {}
-
                     idx1 = normalize_netkeiba_index_cell(sp.get("index1", "無"))
                     idx2 = normalize_netkeiba_index_cell(sp.get("index2", "無"))
                     idx3 = normalize_netkeiba_index_cell(sp.get("index3", "無"))
                     course = normalize_netkeiba_index_cell(sp.get("course", "無"))
                     avg5 = normalize_netkeiba_index_cell(sp.get("avg5", "無"))
-
                     speed_line = f"  【指数】 前走:{idx1}、2走前:{idx2}、3走前:{idx3}、コース最高:{course}、5走平均:{avg5}\n"
+
+                    # ★直近3走概要 + 休み明け（netkeiba 馬柱5走）
+                    past_info = past5_dict.get(umaban, {}) if isinstance(past5_dict, dict) else {}
+                    past3 = past_info.get("past3") or ["（情報なし）", "（情報なし）", "（情報なし）"]
+                    rest_txt = past_info.get("rest") or "（情報なし）"
+
+                    # 直近3走（前走/2走/3走）を必ず3本に
+                    while len(past3) < 3:
+                        past3.append("（情報なし）")
+                    past3 = past3[:3]
+
+                    past_block = (
+                        "  【直近3走結果概要】\n"
+                        f"    ・前走: {past3[0]}\n"
+                        f"    ・2走前: {past3[1]}\n"
+                        f"    ・3走前: {past3[2]}\n"
+                    )
+                    rest_block = f"  【休み明け】 {rest_txt}\n"
 
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"
@@ -967,6 +1146,8 @@ def run_all_races(target_races=None):
                         f"{prev_block}"
                         f"{cyokyo_block}"
                         f"{speed_line}"
+                        f"{past_block}"
+                        f"{rest_block}"
                     )
                     merged.append(text)
 

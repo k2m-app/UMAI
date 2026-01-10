@@ -19,11 +19,10 @@ KEIBA_PASS = st.secrets.get("KEIBA_PASS", "")
 DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 
 # デフォルト設定 (グローバル変数)
-# 必要に応じてここを変更してください
-YEAR = "2025"
-KAI = "05"
+YEAR = "2026"
+KAI = "01"
 PLACE = "05"  # 中山
-DAY = "08"
+DAY = "03"
 
 BASE_URL = "https://s.keibabook.co.jp"
 
@@ -37,6 +36,21 @@ KEIBABOOK_TO_NETKEIBA_PLACE = {
     "08": "01", "09": "02", "06": "03", "07": "04", "04": "05",
     "05": "06", "02": "07", "00": "08", "01": "09", "03": "10",
 }
+
+# ==================================================
+# パラメータ設定・取得関数 (ここを復活・修正)
+# ==================================================
+def set_race_params(year, kai, place, day):
+    """UIから開催パラメータを設定するための関数"""
+    global YEAR, KAI, PLACE, DAY
+    YEAR = str(year)
+    KAI = str(kai).zfill(2)
+    PLACE = str(place).zfill(2)
+    DAY = str(day).zfill(2)
+
+def get_current_params():
+    """現在のパラメータを返す関数"""
+    return YEAR, KAI, PLACE, DAY
 
 # ==================================================
 # ユーティリティ
@@ -330,7 +344,7 @@ def parse_keibabook_cpu(html: str, is_shinba: bool = False) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     data = {}
 
-    # --- スピード指数テーブル (新馬戦でも表示される場合があるため維持) ---
+    # --- スピード指数テーブル ---
     speed_tbl = soup.find("table", id="cpu_speed_sort_table")
     if speed_tbl and speed_tbl.tbody:
         for tr in speed_tbl.tbody.find_all("tr"):
@@ -580,7 +594,7 @@ def run_all_races(target_races=None):
             status = st.empty()
             status.text("データ収集中...")
 
-            # 1. 厩舎の話 (ここでレース名を取得して新馬判定を行う)
+            # 1. 厩舎の話
             header_info, danwa_data = fetch_keibabook_danwa(driver, race_id)
             if not danwa_data:
                 st.error("馬データが見つかりませんでした (厩舎の話ページ取得失敗)")
@@ -607,7 +621,6 @@ def run_all_races(target_races=None):
 
             # --- データ統合 ---
             lines = []
-            # danwa_dataのキー(馬番)でループ
             for umaban in sorted(danwa_data.keys(), key=int):
                 d_info = danwa_data[umaban]
                 c_info = cpu_data.get(umaban, {})
@@ -625,7 +638,6 @@ def run_all_races(target_races=None):
                 # --- ファクターテキストの分岐 ---
                 if is_shinba:
                     # 新馬戦用フォーマット (出脚/血統/動き)
-                    # c_infoから取得できない場合は'-'
                     fac_str = f"F(出脚/血統/動き):{c_info.get('fac_deashi','-')}/{c_info.get('fac_kettou','-')}/{c_info.get('fac_ugoki','-')}"
                 else:
                     # 通常レース用フォーマット (コース/距離/前走)

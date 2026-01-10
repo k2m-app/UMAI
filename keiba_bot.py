@@ -232,26 +232,30 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
 def login_netkeiba(driver: webdriver.Chrome) -> bool:
     """
     成功したら True、失敗/未設定なら False
+    ★改善: ログイン確認をより厳密に
     """
     if not NETKEIBA_ID or not NETKEIBA_PASS:
+        print("netkeiba login: IDまたはパスワードが未設定")
         return False
 
     try:
+        # 現在のURLを保存（ログイン後に戻るため）
+        original_url = driver.current_url
+        
+        print(f"netkeiba login: ログインページにアクセス")
         driver.get("https://regist.netkeiba.com/?pid=stage_login")
-        time.sleep(0.8)
+        time.sleep(1.2)
 
+        # ID入力欄を探す
         id_candidates = [
             (By.NAME, "login_id"),
             (By.NAME, "userid"),
             (By.NAME, "id"),
+            (By.ID, "login_id"),
+            (By.CSS_SELECTOR, "input[type='text'][name*='login']"),
             (By.CSS_SELECTOR, "input[type='text']"),
         ]
-        pass_candidates = [
-            (By.NAME, "pswd"),
-            (By.NAME, "password"),
-            (By.CSS_SELECTOR, "input[type='password']"),
-        ]
-
+        
         id_el = None
         for how, sel in id_candidates:
             try:
@@ -259,10 +263,19 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
                     EC.visibility_of_element_located((how, sel))
                 )
                 if id_el:
+                    print(f"netkeiba login: ID入力欄を発見 ({how}: {sel})")
                     break
             except Exception:
                 continue
 
+        # パスワード入力欄を探す
+        pass_candidates = [
+            (By.NAME, "pswd"),
+            (By.NAME, "password"),
+            (By.ID, "pswd"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+        ]
+        
         pw_el = None
         for how, sel in pass_candidates:
             try:
@@ -270,29 +283,42 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
                     EC.visibility_of_element_located((how, sel))
                 )
                 if pw_el:
+                    print(f"netkeiba login: パスワード入力欄を発見 ({how}: {sel})")
                     break
             except Exception:
                 continue
 
         if not id_el or not pw_el:
+            print("netkeiba login: 入力欄が見つかりません")
             return False
 
+        # 入力
         id_el.clear()
         id_el.send_keys(NETKEIBA_ID)
+        time.sleep(0.3)
+        
         pw_el.clear()
         pw_el.send_keys(NETKEIBA_PASS)
+        time.sleep(0.3)
 
+        # ログインボタンをクリック
         btn_candidates = [
-            (By.CSS_SELECTOR, "input[type='submit']"),
+            (By.CSS_SELECTOR, "input[type='submit'][value*='ログイン']"),
             (By.CSS_SELECTOR, "button[type='submit']"),
-            (By.CSS_SELECTOR, ".Btn_Login, .btn_login, .btn"),
+            (By.CSS_SELECTOR, "input[type='submit']"),
+            (By.CSS_SELECTOR, ".Btn_Login"),
+            (By.CSS_SELECTOR, ".btn_login"),
+            (By.CSS_SELECTOR, ".btn"),
+            (By.XPATH, "//input[@type='submit' and contains(@value, 'ログイン')]"),
         ]
+        
         clicked = False
         for how, sel in btn_candidates:
             try:
                 btn = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((how, sel))
                 )
+                print(f"netkeiba login: ログインボタンをクリック ({how}: {sel})")
                 btn.click()
                 clicked = True
                 break
@@ -300,17 +326,38 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
                 continue
 
         if not clicked:
+            print("netkeiba login: ログインボタンが見つかりません")
             return False
 
-        time.sleep(1.2)
+        time.sleep(2.0)  # ログイン処理待ち
 
+        # ログイン成功確認（複数の方法で）
         html = driver.page_source
-        if "ログアウト" in html or "action=logout" in html:
+        current_url = driver.current_url
+        
+        success_indicators = [
+            "ログアウト" in html,
+            "action=logout" in html,
+            "logout" in html.lower(),
+            "stage_login" not in current_url,  # ログインページから離れた
+            "マイページ" in html,
+            NETKEIBA_ID[:3] in html,  # IDの一部が表示されている
+        ]
+        
+        success_count = sum(success_indicators)
+        print(f"netkeiba login: ログイン成功指標 {success_count}/{len(success_indicators)} 個検出")
+        
+        if success_count >= 2:  # 2つ以上の指標があれば成功と判断
+            print("netkeiba login: ログイン成功と判断")
             return True
+        else:
+            print(f"netkeiba login: ログイン失敗の可能性 (URL: {current_url})")
+            return False
 
-        return False
-
-    except Exception:
+    except Exception as e:
+        print(f"netkeiba login: 例外発生: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -642,30 +689,66 @@ def parse_netkeiba_speed_index(html: str) -> dict:
 def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -> dict:
     """
     netkeiba speed.html を開いて指数辞書を返す
+    ★ログイン確認を強化し、確実に全頭分のデータを取得
     """
     url = f"https://race.netkeiba.com/race/speed.html?race_id={netkeiba_race_id}&type=shutuba&mode=default"
+    
+    # 最初のアクセス
     driver.get(url)
-
+    time.sleep(1.5)
+    
+    html = driver.page_source
+    
+    # ログインが必要かチェック（より厳密に）
+    needs_login = False
+    if "無料会員登録" in html or "ログインして" in html or "会員登録" in html:
+        needs_login = True
+    
+    # ログインページにリダイレクトされているかもチェック
+    if "stage_login" in driver.current_url or "login" in driver.current_url.lower():
+        needs_login = True
+    
+    # ログインが必要な場合
+    if needs_login and NETKEIBA_ID and NETKEIBA_PASS:
+        print(f"netkeiba speed: ログインが必要と判断しました (URL: {driver.current_url})")
+        
+        # ログイン実行
+        ok = login_netkeiba(driver)
+        if ok:
+            print("netkeiba speed: ログイン成功、指数ページに再アクセスします")
+            # ログイン後、指数ページに再度アクセス
+            driver.get(url)
+            time.sleep(1.5)
+            html = driver.page_source
+        else:
+            print("netkeiba speed: ログイン失敗しました")
+    
+    # テーブルの読み込みを待つ
     try:
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table.SpeedIndex_Table"))
         )
-    except Exception:
-        pass
-
-    time.sleep(1.0)  # JavaScript レンダリング待ち
-
+        time.sleep(0.5)  # JavaScript レンダリング待ち
+    except Exception as e:
+        print(f"netkeiba speed: テーブル読み込みエラー: {e}")
+    
+    # 最終的なHTMLを取得
     html = driver.page_source
-
-    # ログインが必要そうなら 1回だけログインして再取得
-    if ("無料会員登録" in html or "ログイン" in html) and NETKEIBA_ID and NETKEIBA_PASS:
-        ok = login_netkeiba(driver)
-        if ok:
-            driver.get(url)
-            time.sleep(1.0)
-            html = driver.page_source
-
-    return parse_netkeiba_speed_index(html)
+    
+    # パース前のデバッグ情報
+    soup_test = BeautifulSoup(html, "html.parser")
+    table_test = soup_test.find("table", class_=lambda c: c and "SpeedIndex_Table" in str(c))
+    if table_test and table_test.tbody:
+        row_count = len(table_test.tbody.find_all("tr", class_=lambda c: c and "HorseList" in str(c)))
+        print(f"netkeiba speed: HTMLから{row_count}頭分のデータを検出")
+    else:
+        print("netkeiba speed: テーブルが見つかりません")
+    
+    # パース実行
+    result = parse_netkeiba_speed_index(html)
+    print(f"netkeiba speed: パース結果: {len(result)}頭分のデータを取得")
+    
+    return result
 
 
 def keibabook_race_id_to_netkeiba_race_id(year: str, kai: str, place: str, day: str, race_num_2: str) -> str:
@@ -1201,14 +1284,17 @@ def run_all_races(target_races=None):
         login_keibabook(driver)
         st.success("✅ 競馬ブック ログイン完了")
 
-        # netkeibaは「必要なら」ログイン(失敗しても続行)
+        # ★修正: netkeibaログインを最初に1回だけ実行（セッション維持のため）
+        netkeiba_logged_in = False
         if NETKEIBA_ID and NETKEIBA_PASS:
-            st.info("🔑 netkeiba ログイン確認中(必要なら)...")
+            st.info("🔑 netkeiba ログイン中...")
             netkeiba_logged_in = login_netkeiba(driver)
             if netkeiba_logged_in:
-                st.success("✅ netkeiba ログイン完了")
+                st.success("✅ netkeiba ログイン完了（セッション確立）")
             else:
-                st.warning("⚠️ netkeiba ログインは未確認(閲覧可能なら取得できます)")
+                st.warning("⚠️ netkeiba ログインに失敗しました。無料範囲のデータのみ取得できます。")
+        else:
+            st.info("ℹ️ netkeiba認証情報が未設定のため、無料範囲のデータのみ取得します。")
 
         for r in race_numbers:
             race_num = f"{r:02}"

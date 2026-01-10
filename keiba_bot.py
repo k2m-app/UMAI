@@ -58,7 +58,9 @@ def set_race_params(year, kai, place, day):
     KAI = str(kai).zfill(2)
     PLACE = str(place).zfill(2)
     DAY = str(day).zfill(2)
-
+def get_current_params():
+    """現在のパラメータ（UI表示用）"""
+    return YEAR, KAI, PLACE, DAY
 
 # ==================================================
 # ★netkeiba 指数セル正規化

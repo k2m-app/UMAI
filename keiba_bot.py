@@ -22,11 +22,11 @@ DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 
-# ★追加：netkeiba
+# ★追加:netkeiba
 NETKEIBA_ID = st.secrets.get("NETKEIBA_ID", "")
 NETKEIBA_PASS = st.secrets.get("NETKEIBA_PASS", "")
 
-# デフォルト設定（app.py 側で set_race_params が呼ばれると書き換わる）
+# デフォルト設定(app.py 側で set_race_params が呼ばれると書き換わる)
 YEAR = "2025"
 KAI = "04"
 PLACE = "02"
@@ -39,7 +39,7 @@ PLACE_NAMES = {
     "05": "中山", "06": "福島", "07": "新潟", "08": "札幌", "09": "函館",
 }
 
-# ★追加：競馬ブック PLACEコード → netkeiba 競馬場コード
+# ★追加:競馬ブック PLACEコード → netkeiba 競馬場コード
 # 01札幌 02函館 03福島 04新潟 05東京 06中山 07中京 08京都 09阪神 10小倉
 KEIBABOOK_TO_NETKEIBA_PLACE = {
     "08": "01",  # 札幌
@@ -63,22 +63,22 @@ def set_race_params(year, kai, place, day):
     DAY = str(day).zfill(2)
 
 def get_current_params():
-    """現在のパラメータ（UI表示用）"""
+    """現在のパラメータ(UI表示用)"""
     return YEAR, KAI, PLACE, DAY
 
 
 # ==================================================
-# ★追加：netkeiba 指数セル正規化（1000は必ず「無」）
+# ★修正:netkeiba 指数セル正規化(1000は必ず「無」)
 # ==================================================
 def normalize_netkeiba_index_cell(raw: str) -> str:
     """
-    目的：
+    目的:
     - netkeiba指数が「未」「-」のとき内部的に1000になるケースを「無」に統一
     - "1070 70" 等の混在から本命値だけを抽出
-    ルール：
+    ルール:
     - "1000" は無条件で「無」
     - "未" / "-" / "－" / 空 は「無」
-    - 数字は 3桁以下を優先して末尾を採用（70, 54, 107など）
+    - 数字は 3桁以下を優先して末尾を採用(70, 54, 107など)
     - それも無ければ「無」
     """
     if raw is None:
@@ -99,13 +99,13 @@ def normalize_netkeiba_index_cell(raw: str) -> str:
     if not nums:
         return "無"
 
-    # 1000が含まれる（または単体）なら「無」
+    # 1000が含まれる(または単体)なら「無」
     if any(n == "1000" for n in nums):
         # ただし "1070 70" のように1000以外の有効値がある場合は有効値を優先
         short = [n for n in nums if len(n) <= 3 and n != "1000"]
         return short[-1] if short else "無"
 
-    # 3桁以下優先（多くの場合、ここが本命の指数）
+    # 3桁以下優先(多くの場合、ここが本命の指数)
     short = [n for n in nums if len(n) <= 3]
     if short:
         return short[-1]
@@ -114,7 +114,7 @@ def normalize_netkeiba_index_cell(raw: str) -> str:
 
 
 # ==================================================
-# ワンクリックコピー（components.html + clipboard）
+# ワンクリックコピー(components.html + clipboard)
 # ==================================================
 def render_copy_button(text: str, label: str, dom_id: str):
     safe_text = json.dumps(text)
@@ -142,7 +142,7 @@ def render_copy_button(text: str, label: str, dom_id: str):
             msg.textContent = "コピーしました";
             setTimeout(() => msg.textContent = "", 1200);
           }} catch (e) {{
-            msg.textContent = "コピーに失敗（ブラウザ制限の可能性）";
+            msg.textContent = "コピーに失敗(ブラウザ制限の可能性)";
             setTimeout(() => msg.textContent = "", 2200);
           }}
         }});
@@ -228,7 +228,7 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
     time.sleep(1.2)
 
 
-# ★追加：netkeibaログイン（必要なときだけ）
+# ★追加:netkeibaログイン(必要なときだけ)
 def login_netkeiba(driver: webdriver.Chrome) -> bool:
     """
     成功したら True、失敗/未設定なら False
@@ -315,7 +315,7 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
 
 
 # ==================================================
-# Parser：共通（競馬ブック）
+# Parser:共通(競馬ブック)
 # ==================================================
 def parse_race_info(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -567,12 +567,12 @@ def parse_syutuba(html: str) -> dict:
 
 
 # ==================================================
-# ★追加：netkeiba タイム指数 parser（1000→無 を適用）
+# ★修正強化:netkeiba タイム指数 parser(1000→無 を適用)
 # ==================================================
 def parse_netkeiba_speed_index(html: str) -> dict:
     """
     netkeiba speed.html の出馬表から指数を抜く。
-    戻り値：{ "1": {"index1":"70","index2":"54","index3":"無","course":"無","avg5":"無"}, ... }
+    戻り値:{ "1": {"index1":"70","index2":"54","index3":"無","course":"無","avg5":"無"}, ... }
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -591,10 +591,25 @@ def parse_netkeiba_speed_index(html: str) -> dict:
             continue
 
         def cell_text(cell_class: str) -> str:
+            """
+            指定されたクラス名のtdセルを探し、テキストを正規化して返す
+            """
             td = tr.find("td", class_=lambda c: c and cell_class in c.split())
             if not td:
                 return "無"
-            txt = td.get_text(" ", strip=True)
+            
+            # Sort_Function_Data_Hiddenスパンを除外してテキスト取得
+            # まず隠しスパンを削除
+            for hidden_span in td.find_all("span", class_="Sort_Function_Data_Hidden"):
+                hidden_span.decompose()
+            
+            # aタグがある場合はそのテキストを優先
+            a_tag = td.find("a")
+            if a_tag:
+                txt = a_tag.get_text(" ", strip=True)
+            else:
+                txt = td.get_text(" ", strip=True)
+            
             return normalize_netkeiba_index_cell(txt)
 
         out[umaban] = {
@@ -622,6 +637,8 @@ def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -
     except Exception:
         pass
 
+    time.sleep(1.0)  # JavaScript レンダリング待ち
+
     html = driver.page_source
 
     # ログインが必要そうなら 1回だけログインして再取得
@@ -629,7 +646,7 @@ def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -
         ok = login_netkeiba(driver)
         if ok:
             driver.get(url)
-            time.sleep(0.8)
+            time.sleep(1.0)
             html = driver.page_source
 
     return parse_netkeiba_speed_index(html)
@@ -646,7 +663,7 @@ def keibabook_race_id_to_netkeiba_race_id(year: str, kai: str, place: str, day: 
 
 
 # ==================================================
-# ★修正：netkeiba 馬柱(5走) から「戦績」を正確に抽出
+# ★修正:netkeiba 馬柱(5走) から「戦績」を正確に抽出
 # 実際のHTML構造に基づいて実装
 # ==================================================
 def _extract_race_result_from_past_td(past_td) -> str:
@@ -674,7 +691,7 @@ def _extract_race_result_from_past_td(past_td) -> str:
     if not cell_text or len(cell_text) < 5:
         return ""
     
-    # Data_Item を探す（存在しない場合は直接探す）
+    # Data_Item を探す(存在しない場合は直接探す)
     data_item = past_td.find("div", class_="Data_Item")
     if data_item:
         container = data_item
@@ -698,14 +715,14 @@ def _extract_race_result_from_past_td(past_td) -> str:
                 raw_date = date_match.group(1)
                 date_str = raw_date.replace("/", ".")
             
-            # 競馬場名（日付以降の文字列）
+            # 競馬場名(日付以降の文字列)
             place_match = re.search(r"\d{4}[./]\d{1,2}[./]\d{1,2}\s*(.+)", first_span_text)
             if place_match:
                 place_str = place_match.group(1).strip()
                 # "京都10" のような場合、数字を除去
                 place_str = re.sub(r"\d+$", "", place_str).strip()
         
-        # 着順（class="Num" のspan）
+        # 着順(class="Num" のspan)
         num_span = data01.find("span", class_="Num")
         if num_span:
             rank_num = num_span.get_text(strip=True)
@@ -719,7 +736,7 @@ def _extract_race_result_from_past_td(past_td) -> str:
     class_str = ""
     
     if data02:
-        # レース名（aタグのテキスト、ただしspanを除く）
+        # レース名(aタグのテキスト、ただしspanを除く)
         a_tag = data02.find("a")
         if a_tag:
             # spanを一時的に除去してテキスト取得
@@ -739,14 +756,14 @@ def _extract_race_result_from_past_td(past_td) -> str:
         if grade_span:
             class_str = grade_span.get_text(strip=True)
     
-    # ===== Data05: コース情報（芝/ダ、距離、タイム） =====
+    # ===== Data05: コース情報(芝/ダ、距離、タイム) =====
     data05 = container.find("div", class_="Data05")
     course_str = ""
     
     if data05:
         text = data05.get_text(" ", strip=True)
         # "芝3000(外) 3:05.5 良" のようなフォーマット
-        # コース部分だけ抽出（芝/ダ + 距離 + (内/外)）
+        # コース部分だけ抽出(芝/ダ + 距離 + (内/外))
         course_match = re.match(r"(芝|ダ)\d+(\([内外]\))?", text)
         if course_match:
             course_str = course_match.group(0)
@@ -775,12 +792,12 @@ def _extract_race_result_from_past_td(past_td) -> str:
             parts.append(f"{pop_match.group(1)}人")
         field_info = "".join(parts)
         
-        # 斤量（数字.数字 のパターン）
+        # 斤量(数字.数字 のパターン)
         weight_match = re.search(r"(\d+\.\d+|\d+\.0)", text)
         if weight_match:
             weight = weight_match.group(1)
         
-        # 騎手名（人気の後、斤量の前）
+        # 騎手名(人気の後、斤量の前)
         # "2人 岩田望来 55.0" → "岩田望来"
         jockey_match = re.search(r"\d+人\s+([^\d\s]+(?:\s+[^\d\s]+)?)\s+\d", text)
         if jockey_match:
@@ -798,7 +815,7 @@ def _extract_race_result_from_past_td(past_td) -> str:
     if data06:
         text = data06.get_text(" ", strip=True)
         # "1-1-1-1 (36.4) 514(-12)" のようなフォーマット
-        # 通過順位パターン（ハイフン区切りの数字列）
+        # 通過順位パターン(ハイフン区切りの数字列)
         passing_match = re.match(r"([\d]+-[\d]+(?:-[\d]+)*)", text)
         if passing_match:
             passing = passing_match.group(1)
@@ -847,7 +864,7 @@ def _extract_race_result_from_past_td(past_td) -> str:
 
 def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
     """
-    shutuba_past.html（馬柱5走表示）から戦績を抜く。
+    shutuba_past.html(馬柱5走表示)から戦績を抜く。
     
     実際のHTML構造:
     <table class="Shutuba_Table Shutuba_Past5_Table" id="sort_table">
@@ -918,10 +935,10 @@ def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
         if not umaban:
             continue
 
-        # ===== 過去走（Past）を取得 =====
+        # ===== 過去走(Past)を取得 =====
         past_tds = tr.find_all("td", class_=lambda c: c and "Past" in str(c))
         
-        # Rest（休み明け情報）を除外
+        # Rest(休み明け情報)を除外
         past_tds = [td for td in past_tds if "Rest" not in str(td.get("class", []))]
         
         past_summaries = []
@@ -970,7 +987,7 @@ def fetch_netkeiba_past5_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -
 
 
 # ==================================================
-# fetch（Selenium）競馬ブック
+# fetch(Selenium)競馬ブック
 # ==================================================
 def fetch_danwa_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/danwa/0/{race_id}"
@@ -1009,7 +1026,7 @@ def fetch_syutuba_dict(driver, race_id: str):
 
 
 # ==================================================
-# 直近開催：複数候補検出
+# 直近開催:複数候補検出
 # ==================================================
 def detect_meet_candidates(driver, max_candidates: int = 12):
     driver.get(f"{BASE_URL}/cyuou/")
@@ -1064,7 +1081,7 @@ def auto_detect_meet_candidates():
 
 
 # ==================================================
-# Dify（Streaming）
+# ★修正:Dify(Streaming) - タイムアウト対策強化
 # ==================================================
 def stream_dify_workflow(full_text: str):
     if not DIFY_API_KEY:
@@ -1088,7 +1105,7 @@ def stream_dify_workflow(full_text: str):
             headers=headers,
             json=payload,
             stream=True,
-            timeout=300,
+            timeout=600,  # 10分に延長
         )
 
         if res.status_code != 200:
@@ -1126,12 +1143,14 @@ def stream_dify_workflow(full_text: str):
                     if found_text.strip():
                         yield found_text.strip()
 
+    except requests.exceptions.Timeout:
+        yield "\n\n⚠️ タイムアウト: Difyの処理時間が長すぎます。データは保存されていますが、全ての出力を受信できませんでした。"
     except Exception as e:
-        yield f"⚠️ Request Error: {str(e)}"
+        yield f"\n\n⚠️ Request Error: {str(e)}"
 
 
 # ==================================================
-# 結合用：馬名キー救済
+# 結合用:馬名キー救済
 # ==================================================
 def _find_by_name_key(d: dict, bamei: str):
     if not bamei:
@@ -1145,7 +1164,7 @@ def _find_by_name_key(d: dict, bamei: str):
 
 
 # ==================================================
-# メイン処理（複数レース）
+# ★修正:メイン処理(複数レース) - Streamlitタイムアウト対策
 # ==================================================
 def run_all_races(target_races=None):
     race_numbers = (
@@ -1162,18 +1181,18 @@ def run_all_races(target_races=None):
     driver = build_driver()
 
     try:
-        st.info("🔑 ログイン中...（競馬ブック）")
+        st.info("🔑 ログイン中...(競馬ブック)")
         login_keibabook(driver)
         st.success("✅ 競馬ブック ログイン完了")
 
-        # netkeibaは「必要なら」ログイン（失敗しても続行）
+        # netkeibaは「必要なら」ログイン(失敗しても続行)
         if NETKEIBA_ID and NETKEIBA_PASS:
-            st.info("🔑 netkeiba ログイン確認中（必要なら）...")
+            st.info("🔑 netkeiba ログイン確認中(必要なら)...")
             netkeiba_logged_in = login_netkeiba(driver)
             if netkeiba_logged_in:
                 st.success("✅ netkeiba ログイン完了")
             else:
-                st.warning("⚠️ netkeiba ログインは未確認（閲覧可能なら取得できます）")
+                st.warning("⚠️ netkeiba ログインは未確認(閲覧可能なら取得できます)")
 
         for r in race_numbers:
             race_num = f"{r:02}"
@@ -1182,8 +1201,11 @@ def run_all_races(target_races=None):
             netkeiba_race_id = keibabook_race_id_to_netkeiba_race_id(YEAR, KAI, PLACE, DAY, race_num)
 
             st.markdown(f"### {place_name} {r}R")
+            
+            # ★修正:st.empty()を使って更新可能なコンテナを作成
             status_area = st.empty()
-            result_area = st.empty()
+            result_container = st.container()
+            
             full_answer = ""
 
             try:
@@ -1198,31 +1220,41 @@ def run_all_races(target_races=None):
                 # A-3 cyokyo
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-                # A-3.5 syutuba（馬番・馬名・騎手）
+                # A-3.5 syutuba(馬番・馬名・騎手)
                 syutuba_dict = fetch_syutuba_dict(driver, race_id)
 
                 if not syutuba_dict:
-                    status_area.warning("⚠️ 出馬表が取得できませんでした（全頭保証できない可能性）。")
+                    status_area.warning("⚠️ 出馬表が取得できませんでした(全頭保証できない可能性)。")
 
-                # A-4 netkeiba 指数（取れなくても続行）
+                # A-4 netkeiba 指数(取れなくても続行)
                 speed_dict = {}
                 if netkeiba_race_id:
                     try:
+                        status_area.info(f"📊 netkeiba 指数を取得中... (race_id: {netkeiba_race_id})")
                         speed_dict = fetch_netkeiba_speed_dict(driver, netkeiba_race_id)
+                        if speed_dict:
+                            status_area.success(f"✅ netkeiba 指数取得完了 ({len(speed_dict)}頭分)")
+                        else:
+                            status_area.warning("⚠️ netkeiba 指数が取得できませんでした")
                     except Exception as e:
                         print("netkeiba speed fetch error:", e)
+                        status_area.warning(f"⚠️ netkeiba 指数取得エラー: {str(e)}")
                         speed_dict = {}
 
-                # ★A-4.5 netkeiba 馬柱(5走)：戦績（取れなくても続行）
+                # ★A-4.5 netkeiba 馬柱(5走):戦績(取れなくても続行)
                 past5_dict = {}
                 if netkeiba_race_id:
                     try:
+                        status_area.info(f"📝 netkeiba 戦績を取得中...")
                         past5_dict = fetch_netkeiba_past5_dict(driver, netkeiba_race_id)
+                        if past5_dict:
+                            status_area.success(f"✅ netkeiba 戦績取得完了 ({len(past5_dict)}頭分)")
                     except Exception as e:
                         print("netkeiba past5 fetch error:", e)
+                        status_area.warning(f"⚠️ netkeiba 戦績取得エラー: {str(e)}")
                         past5_dict = {}
 
-                # A-5 結合（出馬表ベース）
+                # A-5 結合(出馬表ベース)
                 merged = []
                 umaban_list = (
                     sorted(syutuba_dict.keys(), key=lambda x: int(x))
@@ -1242,7 +1274,7 @@ def run_all_races(target_races=None):
                     if kisyu_raw:
                         kisyu = f"替・{kisyu_raw}" if kisyu_change else kisyu_raw
                     else:
-                        kisyu = "（騎手不明）"
+                        kisyu = "(騎手不明)"
 
                     # 厩舎の話
                     d_comment = danwa_dict.get(umaban)
@@ -1250,9 +1282,9 @@ def run_all_races(target_races=None):
                         alt = _find_by_name_key(danwa_dict, bamei)
                         d_comment = alt if isinstance(alt, str) else None
                     if not d_comment:
-                        d_comment = "（情報なし）"
+                        d_comment = "(情報なし)"
 
-                    # 前走（競馬ブック：前走談話）
+                    # 前走(競馬ブック:前走談話)
                     z_data = zenkoso_dict.get(umaban)
                     if not z_data:
                         alt = _find_by_name_key(zenkoso_dict, bamei)
@@ -1267,13 +1299,13 @@ def run_all_races(target_races=None):
 
                     if z_prev_info or z_comment:
                         prev_block = (
-                            f"  【前走情報】 {z_prev_info or '（情報なし）'}\n"
-                            f"  【前走談話】 {z_comment or '（無し）'}\n"
+                            f"  【前走情報】 {z_prev_info or '(情報なし)'}\n"
+                            f"  【前走談話】 {z_comment or '(無し)'}\n"
                         )
                     else:
-                        prev_block = "  【前走】 新馬（前走情報なし）\n"
+                        prev_block = "  【前走】 新馬(前走情報なし)\n"
 
-                    # 調教（競馬ブック）
+                    # 調教(競馬ブック)
                     c = cyokyo_dict.get(umaban)
                     if not c:
                         c = _find_by_name_key(cyokyo_dict, bamei)
@@ -1283,11 +1315,11 @@ def run_all_races(target_races=None):
                     c_detail = (c.get("detail") or "").strip()
 
                     if c_tanpyo or c_detail:
-                        cyokyo_block = f"  【調教】 短評:{c_tanpyo or '（なし）'} / 詳細:{c_detail or '（なし）'}\n"
+                        cyokyo_block = f"  【調教】 短評:{c_tanpyo or '(なし)'} / 詳細:{c_detail or '(なし)'}\n"
                     else:
-                        cyokyo_block = "  【調教】 （情報なし）\n"
+                        cyokyo_block = "  【調教】 (情報なし)\n"
 
-                    # 指数（netkeiba）※すべて normalize 済みの dict になってるが念のため再正規化
+                    # ★修正:指数(netkeiba)※すべて normalize 済みの dict になってるが念のため再正規化
                     sp = speed_dict.get(umaban, {}) if isinstance(speed_dict, dict) else {}
                     idx1 = normalize_netkeiba_index_cell(sp.get("index1", "無"))
                     idx2 = normalize_netkeiba_index_cell(sp.get("index2", "無"))
@@ -1296,7 +1328,7 @@ def run_all_races(target_races=None):
                     avg5 = normalize_netkeiba_index_cell(sp.get("avg5", "無"))
                     speed_line = f"  【指数】 前走:{idx1}、2走前:{idx2}、3走前:{idx3}、コース最高:{course}、5走平均:{avg5}\n"
 
-                    # ★戦績（netkeiba 馬柱5走）
+                    # ★戦績(netkeiba 馬柱5走)
                     past_info = past5_dict.get(umaban, {}) if isinstance(past5_dict, dict) else {}
                     past3 = past_info.get("past3") or ["", "", ""]
                     
@@ -1305,7 +1337,7 @@ def run_all_races(target_races=None):
                         past3.append("")
                     past3 = past3[:3]
                     
-                    # 戦績ブロック作成（過去走がある分だけ出力）
+                    # 戦績ブロック作成(過去走がある分だけ出力)
                     senreki_lines = []
                     labels = ["前走", "2走前", "3走前"]
                     for i, (label, record) in enumerate(zip(labels, past3)):
@@ -1315,7 +1347,7 @@ def run_all_races(target_races=None):
                     if senreki_lines:
                         senreki_block = "  【戦績】" + " ".join(senreki_lines) + "\n"
                     else:
-                        senreki_block = "  【戦績】 新馬（過去走なし）\n"
+                        senreki_block = "  【戦績】 新馬(過去走なし)\n"
 
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"
@@ -1356,12 +1388,18 @@ def run_all_races(target_races=None):
 
                 status_area.info("🤖 AIが分析・執筆中です...")
 
-                for chunk in stream_dify_workflow(full_text):
-                    if chunk:
-                        full_answer += chunk
-                        result_area.markdown(full_answer + "▌")
+                # ★修正:result_containerの中にmarkdownエリアを作成
+                with result_container:
+                    result_area = st.empty()
+                    
+                    for chunk in stream_dify_workflow(full_text):
+                        if chunk:
+                            full_answer += chunk
+                            # カーソル表示で進行中を示す
+                            result_area.markdown(full_answer + "▌")
 
-                result_area.markdown(full_answer)
+                    # 最終出力(カーソル削除)
+                    result_area.markdown(full_answer)
 
                 if full_answer.strip():
                     status_area.success("✅ 分析完了")
@@ -1371,7 +1409,7 @@ def run_all_races(target_races=None):
                         dom_id = f"copy_race_{race_id}_{int(time.time()*1000)}"
                         render_copy_button(
                             text=full_answer.strip(),
-                            label=f"📋 {place_name}{r}R をコピー（ワンクリック）",
+                            label=f"📋 {place_name}{r}R をコピー(ワンクリック)",
                             dom_id=dom_id,
                         )
                         st.download_button(
@@ -1390,6 +1428,8 @@ def run_all_races(target_races=None):
             except Exception as e:
                 err_msg = f"❌ エラー発生 ({place_name} {r}R): {str(e)}"
                 print(err_msg)
+                import traceback
+                traceback.print_exc()
                 status_area.error(err_msg)
 
             st.write("---")
@@ -1398,12 +1438,12 @@ def run_all_races(target_races=None):
             combined_text = "\n".join(combined_blocks).strip()
             st.session_state["combined_output"] = combined_text
 
-            st.subheader("📌 全レースまとめ（要求したレースを全部まとめてコピー）")
+            st.subheader("📌 全レースまとめ(要求したレースを全部まとめてコピー)")
 
             dom_id_all = f"copy_all_{base_id}_{int(time.time()*1000)}"
             render_copy_button(
                 text=combined_text,
-                label="📋 全レースまとめをコピー（ワンクリック）",
+                label="📋 全レースまとめをコピー(ワンクリック)",
                 dom_id=dom_id_all,
             )
 
@@ -1415,7 +1455,7 @@ def run_all_races(target_races=None):
                 key=f"dl_all_{base_id}",
             )
 
-            with st.expander("👀 まとめ表示（閲覧用）", expanded=False):
+            with st.expander("👀 まとめ表示(閲覧用)", expanded=False):
                 st.text_area(
                     "全レースまとめテキスト",
                     value=combined_text,

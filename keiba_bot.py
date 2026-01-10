@@ -224,18 +224,13 @@ def parse_syutuba(html: str) -> dict:
     return result
 
 # ==================================================
-# ★新規: 競馬ブック CPU予想 (指数・ファクター)
+# 競馬ブック CPU予想
 # ==================================================
 def parse_keibabook_cpu(html: str) -> dict:
-    """
-    競馬ブックのCPU予想ページから、スピード指数とファクターを抽出する。
-    戻り値: { "1": {"speed_last": 72, "speed_2ago": 70, "speed_3ago": 75, "speed_avg": 72, 
-                   "factor_course": "○", "factor_dist": "△", "factor_zenso": "無"}, ... }
-    """
     soup = BeautifulSoup(html, "html.parser")
     data = {}
 
-    # 1. スピード指数の取得 (id="cpu_speed_sort_table")
+    # スピード指数
     speed_table = soup.find("table", id="cpu_speed_sort_table")
     if speed_table and speed_table.tbody:
         for tr in speed_table.tbody.find_all("tr"):
@@ -244,11 +239,7 @@ def parse_keibabook_cpu(html: str) -> dict:
             umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
             if not umaban: continue
 
-            # tdを取得
             tds = tr.find_all("td")
-            # 構造: 枠, 馬番, CPU印, 馬名, 最高, 3走前, 2走前, 前回(前走)
-            # 後ろから数えるのが確実
-            # 前走: -1, 2走前: -2, 3走前: -3
             if len(tds) < 8: continue
             
             def get_val(idx):
@@ -260,8 +251,6 @@ def parse_keibabook_cpu(html: str) -> dict:
             val_last = get_val(-1)
             val_2ago = get_val(-2)
             val_3ago = get_val(-3)
-
-            # 0を除いた平均を計算
             valid_scores = [v for v in [val_last, val_2ago, val_3ago] if v > 0]
             avg = round(sum(valid_scores) / len(valid_scores)) if valid_scores else 0
 
@@ -273,8 +262,7 @@ def parse_keibabook_cpu(html: str) -> dict:
                 "speed_avg": avg if avg > 0 else "無"
             })
 
-    # 2. ファクターの取得 (caption="ファクター")
-    # テーブル特定が難しいので、すべてのtableを走査
+    # ファクター
     factor_table = None
     for tbl in soup.find_all("table"):
         cap = tbl.find("caption")
@@ -290,7 +278,6 @@ def parse_keibabook_cpu(html: str) -> dict:
             if not umaban: continue
 
             tds = tr.find_all("td")
-            # 構造推定: 枠(0), 馬番(1), CPU(2), 馬名(3), 道悪(4), コース(5), 距離(6), 前走(7), 調教(8), 実績(9)
             if len(tds) < 8: continue
 
             def get_mark(idx):
@@ -299,30 +286,83 @@ def parse_keibabook_cpu(html: str) -> dict:
                 txt = p.get_text(strip=True)
                 return txt if txt else "無"
 
-            course_mark = get_mark(5)
-            dist_mark = get_mark(6)
-            zenso_mark = get_mark(7)
-
             if umaban not in data: data[umaban] = {}
             data[umaban].update({
-                "factor_course": course_mark,
-                "factor_dist": dist_mark,
-                "factor_zenso": zenso_mark
+                "factor_course": get_mark(5),
+                "factor_dist": get_mark(6),
+                "factor_zenso": get_mark(7)
             })
 
     return data
 
 def fetch_keibabook_cpu_data(driver, race_id: str):
-    """競馬ブックCPU予想ページを取得"""
     url = f"{BASE_URL}/cyuou/cpu/{race_id}"
     driver.get(url)
     try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "cpu_speed_sort_table"))
-        )
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "cpu_speed_sort_table")))
     except:
-        pass # テーブルがなくても進む
+        pass
     return parse_keibabook_cpu(driver.page_source)
+
+# ==================================================
+# ★新規: 競馬ブック 前走インタビュー (syoin)
+# ==================================================
+def parse_zenkoso_interview(html: str) -> dict:
+    """
+    HTML構造:
+    <tr (Horse Info)> <td class="waku">...</td> <td class="umaban">1</td> ... </tr>
+    <tr> <td class="syoin" colspan="3"> ... <p>インタビュー本文</p> </td> </tr>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", class_=lambda c: c and "syoin" in c)
+    if not table: return {}
+
+    interview_dict = {}
+    rows = table.find_all("tr")
+    current_umaban = None
+
+    for row in rows:
+        # 1. 馬情報行
+        umaban_td = row.find("td", class_="umaban")
+        if umaban_td:
+            current_umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
+            continue
+        
+        # 2. インタビュー行
+        syoin_td = row.find("td", class_="syoin")
+        if syoin_td and current_umaban:
+            # syoinセル内の <p> を探す
+            # 通常は div.syoindata の後に p が来る
+            paragraphs = syoin_td.find_all("p")
+            comment = ""
+            for p in paragraphs:
+                txt = p.get_text(strip=True)
+                # 日付や着順などのメタデータ(syoindata内)を除外する簡易フィルタ
+                # 短すぎる、または「－」だけのものは除外
+                if "－" in txt and len(txt) < 3: continue
+                if "Ｒ" in txt and "着" in txt and len(txt) < 20: continue # レース情報行の除外
+                
+                # 本文と思われる長いテキストを採用
+                if len(txt) > 5: 
+                    comment = txt
+                    break # 最初に見つかった長いテキストをコメントとする
+            
+            if comment:
+                interview_dict[current_umaban] = comment
+            
+            current_umaban = None # リセット
+
+    return interview_dict
+
+def fetch_zenkoso_interview(driver, race_id: str):
+    """前走インタビューページを取得"""
+    url = f"{BASE_URL}/cyuou/syoin/{race_id}"
+    driver.get(url)
+    try:
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.syoin")))
+    except:
+        pass
+    return parse_zenkoso_interview(driver.page_source)
 
 # ==================================================
 # netkeiba (Login不要版)
@@ -333,22 +373,17 @@ def keibabook_race_id_to_netkeiba_race_id(year, kai, place, day, race_num_2):
     return f"{str(year)}{nk_place}{str(kai).zfill(2)}{str(day).zfill(2)}{str(race_num_2).zfill(2)}"
 
 def _extract_race_result_from_past_td(past_td) -> str:
-    # 簡易抽出: "2025.11.02 京都" などの文字列を含めて抽出
     if past_td is None: return ""
     text = past_td.get_text(" ", strip=True)
     if len(text) < 5: return ""
     
-    # 必要な要素を正規表現などで綺麗にする処理は既存のものを踏襲
-    # ここではシンプルに主要情報を繋げる
     # 日付・開催
     date_match = re.search(r"(\d{4}[./]\d{1,2}[./]\d{1,2})", text)
     date_str = date_match.group(1).replace("/", ".") if date_match else ""
     
     # 着順
-    rank_match = re.search(r"(\d{1,2})着", text) # 明示的に「着」がある場合
+    rank_match = re.search(r"(\d{1,2})着", text)
     if not rank_match:
-        # Data01の中にある数字を探すなど詳細パースが必要だが、
-        # netkeibaの馬柱HTML構造に依存するため、text全体から着順っぽい数字(Data01のspan class="Num")を探す
         num_span = past_td.find("span", class_="Num")
         rank = num_span.get_text(strip=True) if num_span else ""
     else:
@@ -366,6 +401,23 @@ def _extract_race_result_from_past_td(past_td) -> str:
         cm = re.search(r"(芝|ダ)\d+", c_text)
         if cm: course = cm.group(0)
 
+    # 騎手 (Data03から抽出)
+    # <div class="Data03">13頭 4番 2人 戸崎圭太 53.0</div>
+    data03 = past_td.find("div", class_="Data03")
+    jockey = ""
+    if data03:
+        d3_text = data03.get_text(" ", strip=True)
+        # 「人」の後、「数字.数字(斤量)」の前にある文字列を騎手とする
+        # 例: ... 2人 戸崎圭太 53.0
+        j_match = re.search(r"\d+人\s+([^\d\s]+)\s+\d+\.\d", d3_text)
+        if j_match:
+            jockey = j_match.group(1).strip()
+        else:
+            # ヒットしない場合のフォールバック（斤量の直前の単語）
+            parts_d3 = d3_text.split()
+            if len(parts_d3) >= 2 and re.match(r"\d+\.\d", parts_d3[-1]):
+                jockey = parts_d3[-2]
+
     # 通過順
     data06 = past_td.find("div", class_="Data06")
     passing = ""
@@ -377,6 +429,7 @@ def _extract_race_result_from_past_td(past_td) -> str:
     if date_str: parts.append(date_str)
     if race_name: parts.append(race_name)
     if course: parts.append(course)
+    if jockey: parts.append(f"[{jockey}]") # 騎手を強調
     if passing: parts.append(f"({passing})")
     if rank: parts.append(f"{rank}着")
 
@@ -413,7 +466,6 @@ def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
     return out
 
 def fetch_netkeiba_past5_dict(driver, netkeiba_race_id: str) -> dict:
-    # ログイン不要でアクセス可能なURL
     url = f"https://race.netkeiba.com/race/shutuba_past.html?race_id={netkeiba_race_id}&rf=shutuba_submenu"
     driver.get(url)
     try:
@@ -525,7 +577,15 @@ def run_all_races(target_races=None):
                 except Exception as e:
                     print(f"CPU fetch error: {e}")
 
-                # 4. netkeiba 過去走 (ログイン不要)
+                # 4. 競馬ブック 前走インタビュー (syoin)
+                zenkoso_dict = {}
+                try:
+                    status_area.info("🎤 前走インタビュー取得中...")
+                    zenkoso_dict = fetch_zenkoso_interview(driver, race_id)
+                except Exception as e:
+                    print(f"Zenkoso fetch error: {e}")
+
+                # 5. netkeiba 過去走 (ログイン不要)
                 past5_dict = {}
                 if netkeiba_race_id:
                     try:
@@ -538,7 +598,6 @@ def run_all_races(target_races=None):
                 merged = []
                 umaban_list = sorted(syutuba_dict.keys(), key=lambda x: int(x)) if syutuba_dict else []
                 if not umaban_list:
-                    # 出馬表が取れない場合のバックアップ
                     all_keys = set(danwa_dict.keys()) | set(cpu_dict.keys())
                     umaban_list = sorted(list(all_keys), key=lambda x: int(x) if str(x).isdigit() else 999)
 
@@ -551,7 +610,7 @@ def run_all_races(target_races=None):
                     # 厩舎コメント
                     comment = danwa_dict.get(umaban, "(情報なし)")
 
-                    # 指数・ファクター (競馬ブック)
+                    # 指数・ファクター
                     cpu = cpu_dict.get(umaban, {})
                     sp_last = cpu.get("speed_last", "無")
                     sp_2ago = cpu.get("speed_2ago", "無")
@@ -563,6 +622,11 @@ def run_all_races(target_races=None):
                     fac_zen = cpu.get("factor_zenso", "無")
 
                     index_line = f"  【指数】 前走:{sp_last}、2走前:{sp_2ago}、3走前:{sp_3ago}（3走平均:{sp_avg}）【ファクター】 コース：{fac_crs} 距離：{fac_dis} 前走：{fac_zen}\n"
+
+                    # 前走インタビュー (ある場合のみ記載)
+                    zenkoso_line = ""
+                    if umaban in zenkoso_dict:
+                        zenkoso_line = f"  【前走インタビュー】 {zenkoso_dict[umaban]}\n"
 
                     # 戦績 (netkeiba)
                     p_info = past5_dict.get(umaban, {}).get("past3", ["", "", ""])
@@ -579,6 +643,7 @@ def run_all_races(target_races=None):
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"
                         f"  【厩舎の話】 {comment}\n"
+                        f"{zenkoso_line}"
                         f"{index_line}"
                         f"{senreki_line}"
                     )
@@ -601,7 +666,6 @@ def run_all_races(target_races=None):
                     save_history(YEAR, KAI, PLACE, place_name, DAY, race_num, race_id, full_answer)
                     combined_blocks.append(f"【{place_name} {r}R】\n{full_answer.strip()}\n")
                     
-                    # 個別コピーボタン
                     render_copy_button(full_answer.strip(), f"📋 {place_name}{r}R コピー", f"copy_{race_id}")
                 else:
                     status_area.error("回答なし")
@@ -613,7 +677,6 @@ def run_all_races(target_races=None):
 
             st.write("---")
 
-        # まとめてコピー
         if combined_blocks:
             combined_text = "\n".join(combined_blocks).strip()
             st.subheader("📌 全レースまとめ")

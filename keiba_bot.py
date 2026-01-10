@@ -142,7 +142,6 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
 # 競馬ブック：厩舎の話 (Danwa)
 # ==================================================
 def parse_race_info_from_danwa(html: str) -> dict:
-    """レース基本情報の取得"""
     soup = BeautifulSoup(html, "html.parser")
     racetitle = soup.find("div", class_="racetitle")
     if not racetitle:
@@ -162,9 +161,6 @@ def parse_race_info_from_danwa(html: str) -> dict:
     return {"header_text": "\n".join(header_parts)}
 
 def parse_danwa_horses(html: str) -> dict:
-    """
-    返り値: { "1": {"name": "ロードオールライト", "danwa": "コメント..."}, ... }
-    """
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_=lambda c: c and "danwa" in str(c))
     if not table or not table.tbody:
@@ -348,6 +344,7 @@ def fetch_keibabook_cpu_data(driver, race_id: str):
 
 # ==================================================
 # 【修正】Netkeiba (騎手・戦績詳細取得)
+# 修正箇所: 通過順と着順の厳密抽出
 # ==================================================
 def _parse_netkeiba_past_td(td) -> str:
     """netkeibaの過去走セル（td.Past）を解析して文字列化"""
@@ -361,29 +358,55 @@ def _parse_netkeiba_past_td(td) -> str:
     data02 = td.find("div", class_="Data02")
     race_name = _clean_text_ja(data02.get_text(strip=True)) if data02 else ""
     
-    # 騎手・斤量 (ここが重要)
-    # <div class="Data03">菅原明 57.0</div> のような構造
+    # 騎手・斤量
     data03 = td.find("div", class_="Data03")
     jockey_weight = _clean_text_ja(data03.get_text(" ", strip=True)) if data03 else ""
     
-    # 着順 (Rankクラスを探す)
+    # 【修正】着順取得 (span.Num 優先)
     rank = "?"
-    rank_tag = td.find("div", class_="Rank") or td.find("span", class_="Rank") or td.find("span", class_="Order")
+    # ユーザー指摘の <span class="Num"> を最優先
+    rank_tag = td.find("span", class_="Num")
+    if not rank_tag:
+        rank_tag = td.find("div", class_="Rank") or td.find("span", class_="Rank") or td.find("span", class_="Order")
+    
     if rank_tag:
-        rank = rank_tag.get_text(strip=True)
-    else:
-        # Data01の中に着順が含まれている場合もあるが、まずはシンプルに
-        pass
+        rank = _clean_text_ja(rank_tag.get_text(strip=True))
 
     # タイム・距離
     data05 = td.find("div", class_="Data05")
     time_dist = _clean_text_ja(data05.get_text(" ", strip=True)) if data05 else ""
-    
+
+    # 【修正】通過順取得 (Data06 から 1-1-1-1 形式を抽出)
+    passing = ""
+    data06 = td.find("div", class_="Data06")
+    if data06:
+        # 例: "1-1-1-1 (36.4) 514(-12)"
+        raw_d6 = _clean_text_ja(data06.get_text(strip=True))
+        # 通過順らしきパターン (数字-数字...) を正規表現で抽出
+        # \d{1,2}(?:-\d{1,2})* : 数字1~2桁 + (ハイフン+数字)の繰り返し
+        match = re.search(r"(\d{1,2}(?:-\d{1,2})+)", raw_d6)
+        if match:
+            passing = match.group(1)
+        # 短距離などで「1」のみの場合のケアが必要なら変更するが、
+        # 通常のnetkeiba馬柱はハイフン区切りが多い。1つだけなら match しない。
+        # もし「1」だけでも取りたい場合は r"(\d{1,2}(?:-\d{1,2})*)" にする
+        if not passing:
+             # ハイフンがない場合でも先頭の数字だけ取る（例: "1" だけでペース表示など）
+             match_single = re.match(r"^(\d{1,2})\s", raw_d6)
+             if match_single:
+                 passing = match_single.group(1)
+
     # 情報が少なすぎる(未出走など)場合はハイフン
     if len(date_place) < 2:
         return "-"
+    
+    # ユーザー要望形式: 1-1-1-1 → 9着
+    if passing:
+        rank_display = f"{passing}→{rank}着"
+    else:
+        rank_display = f"{rank}着"
 
-    return f"[{date_place} {race_name} ({rank}着) {jockey_weight} {time_dist}]"
+    return f"[{date_place} {race_name} {jockey_weight} {time_dist} ({rank_display})]"
 
 def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
     nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place, "")
@@ -413,27 +436,23 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
                 break
         if not umaban: continue
 
-        # 【修正】騎手名取得 (aタグ優先)
+        # 騎手名取得 (aタグ優先)
         jockey_td = tr.find("td", class_="Jockey")
         jockey = "不明"
         if jockey_td:
-            # 1. リンク(aタグ)があるか確認
             a_tag = jockey_td.find("a")
             if a_tag:
                 jockey = a_tag.get_text(strip=True)
             else:
-                # 2. リンクがない場合、馬齢などの余計な要素(span.Barei)を削除してからテキスト取得
                 if jockey_td.find("span", class_="Barei"):
                     jockey_td.find("span", class_="Barei").decompose()
                 jockey = jockey_td.get_text(strip=True)
-            
             jockey = _clean_text_ja(jockey)
 
-        # 【修正】過去走 (Pastクラスのtdを構造解析)
+        # 過去走
         past_tds = tr.find_all("td", class_="Past")
         past_list = []
         for td in past_tds[:3]: # 最新3走
-            # クラス名にRest(休み)が含まれていないか確認
             if "Rest" in td.get("class", []):
                 past_list.append("(放牧/休養)")
             else:

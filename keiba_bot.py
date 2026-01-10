@@ -13,6 +13,7 @@ from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
+
 # ==================================================
 # 【設定エリア】secretsから読み込み
 # ==================================================
@@ -56,7 +57,8 @@ KEIBABOOK_TO_NETKEIBA_PLACE = {
 }
 
 # ==================================================
-# netkeiba: User-Agent（2024/11以降の400対策）
+# netkeiba: User-Agent（起動ごとに固定で1つ選ぶ）
+# ※ ここは「負荷軽減・通常アクセスに寄せる」目的のみ
 # ==================================================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -65,56 +67,14 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:115.0) Gecko/20100101 Firefox/115.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Edg/115.0.0.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 OPR/85.0.4341.72",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 OPR/85.0.4341.72",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Vivaldi/5.3.2679.55",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Vivaldi/5.3.2679.55",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Brave/1.40.107",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Brave/1.40.107",
 ]
+CHOSEN_UA = random.choice(USER_AGENTS)
 
-def nk_random_ua() -> str:
-    return random.choice(USER_AGENTS)
+# netkeibaアクセス間隔（短すぎると制限の引き金になりやすい）
+NETKEIBA_MIN_INTERVAL_SEC = 2.5
 
-def nk_sleep(base_sec: float = 2.4, jitter: float = 1.2):
-    """netkeibaのアクセス間隔: 2〜3秒以上を基本にランダム"""
-    time.sleep(base_sec + random.random() * jitter)
-
-def looks_like_netkeiba_block(html: str, current_url: str = "") -> bool:
-    """400 / ブロック / ログイン要求っぽいページをざっくり検知"""
-    if not html:
-        return True
-    h = html.lower()
-    if "400 bad request" in h:
-        return True
-    if "bad request" in h and "400" in h:
-        return True
-    if "アクセスが集中" in html or "しばらく時間をおいて" in html:
-        return True
-    if "通信制限" in html:
-        return True
-    # ログイン誘導に飛ばされてる
-    if "stage_login" in (current_url or ""):
-        return True
-    return False
-
-def apply_netkeiba_headers(driver: webdriver.Chrome, ua: str | None = None):
-    """
-    Chrome DevTools Protocol でUA等を上書き（Selenium Optionsだけより効くことがある）
-    """
-    if ua is None:
-        ua = nk_random_ua()
-
-    try:
-        driver.execute_cdp_cmd("Network.enable", {})
-        driver.execute_cdp_cmd("Network.setUserAgentOverride", {
-            "userAgent": ua,
-            "acceptLanguage": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
-            "platform": "Windows",
-        })
-    except Exception:
-        # 環境によっては失敗するので握りつぶす（Options側UAは効いてる想定）
-        pass
+# 共有のレートリミット用タイムスタンプ
+_last_netkeiba_access_ts = 0.0
 
 
 def set_race_params(year, kai, place, day):
@@ -124,6 +84,7 @@ def set_race_params(year, kai, place, day):
     KAI = str(kai).zfill(2)
     PLACE = str(place).zfill(2)
     DAY = str(day).zfill(2)
+
 
 def get_current_params():
     """現在のパラメータ(UI表示用)"""
@@ -135,6 +96,7 @@ def get_current_params():
 # ==================================================
 def normalize_netkeiba_index_cell(raw: str) -> str:
     """
+    目的:
     - netkeiba指数が「未」「-」のとき内部的に1000になるケースを「無」に統一
     - "1070 70" 等の混在から本命値だけを抽出
     ルール:
@@ -171,7 +133,7 @@ def normalize_netkeiba_index_cell(raw: str) -> str:
 
 
 # ==================================================
-# ワンクリックコピー
+# ワンクリックコピー(components.html + clipboard)
 # ==================================================
 def render_copy_button(text: str, label: str, dom_id: str):
     safe_text = json.dumps(text)
@@ -218,6 +180,7 @@ def get_supabase_client() -> Client | None:
         return None
     return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
+
 def save_history(
     year: str,
     kai: str,
@@ -253,8 +216,9 @@ def save_history(
 # Selenium
 # ==================================================
 def build_driver() -> webdriver.Chrome:
-    ua = nk_random_ua()
-
+    """
+    ★UA設定を追加（主にnetkeibaの400対策＆通常ブラウザに寄せる）
+    """
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -262,32 +226,12 @@ def build_driver() -> webdriver.Chrome:
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1280,2200")
 
-    # ★UA設定（netkeiba 400対策の本丸）
-    options.add_argument(f"--user-agent={ua}")
+    # UA / 言語（サイト側の400回避の一因になり得る）
+    options.add_argument(f"--user-agent={CHOSEN_UA}")
     options.add_argument("--lang=ja-JP")
-    options.add_argument("--accept-lang=ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7")
-
-    # ★自動化フラグを少しだけ弱める（効く環境もある）
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
 
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(60)
-
-    # ★webdriver検知を弱める（万能ではないがやる価値あり）
-    try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'languages', {get: () => ['ja-JP','ja','en-US','en']});
-                Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-            """
-        })
-    except Exception:
-        pass
-
-    # CDP上書きも初回適用
-    apply_netkeiba_headers(driver, ua=ua)
     return driver
 
 
@@ -313,53 +257,103 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
 
 
 # ==================================================
-# ★強化: netkeibaログイン
+# netkeiba: ブロック検知 & アクセス間隔制御
 # ==================================================
+def _netkeiba_rate_limit_sleep():
+    global _last_netkeiba_access_ts
+    now = time.time()
+    wait = NETKEIBA_MIN_INTERVAL_SEC - (now - _last_netkeiba_access_ts)
+    if wait > 0:
+        time.sleep(wait)
+    _last_netkeiba_access_ts = time.time()
+
+
+def _looks_like_netkeiba_block(html: str, url: str) -> bool:
+    """
+    netkeibaのブロック/制限/誘導ページっぽいものを検知したら True
+    ※ “回避”ではなく、検知したら即スキップして負荷をかけない目的
+    """
+    if not html:
+        return True
+
+    h = html.lower()
+
+    # 典型: 400系の文言/Bad Request/会員登録・ログイン誘導
+    block_keywords = [
+        "bad request",
+        "無料会員登録",
+        "会員登録",
+        "ログインして",
+        "アクセスが集中",
+        "しばらくしてから",
+        "エラーが発生",
+    ]
+    if any(k.lower() in h for k in block_keywords):
+        return True
+
+    # ページタイトルが極端に短い/本文が極端に短い等
+    text_len = len(re.sub(r"\s+", "", BeautifulSoup(html, "html.parser").get_text()))
+    if text_len < 200:  # まともな出馬表/指数/馬柱ならもう少しあることが多い
+        # URLが対象ページなら怪しい
+        if "race.netkeiba.com" in url or "db.netkeiba.com" in url:
+            return True
+
+    return False
+
+
+def netkeiba_get(driver: webdriver.Chrome, url: str) -> tuple[bool, str]:
+    """
+    netkeibaアクセス共通ラッパ
+    戻り値: (ok, html)
+    """
+    _netkeiba_rate_limit_sleep()
+    try:
+        driver.get(url)
+        time.sleep(0.8)  # JSレンダリング最低待ち
+        html = driver.page_source or ""
+        if _looks_like_netkeiba_block(html, url):
+            return False, html
+        return True, html
+    except Exception as e:
+        print(f"netkeiba_get error: {e}")
+        return False, ""
+
+
+# ★追加:netkeibaログイン（“成功を過信しない” 方式）
 def login_netkeiba(driver: webdriver.Chrome) -> bool:
     """
     成功したら True、失敗/未設定なら False
-    - UA/Language をCDPで上書きしてからアクセス
-    - 400/ブロックっぽい場合は少し待って再試行
+    注意:
+      - netkeibaはスクレイピング検知や通信制限があり得るため、
+        ログイン処理自体が通っても、以後のページがブロックされることがあります。
+      - ここでは “ログインらしき遷移ができた” 程度の判定に留めます。
     """
     if not NETKEIBA_ID or not NETKEIBA_PASS:
         print("netkeiba login: IDまたはパスワードが未設定")
         return False
 
+    login_url = "https://regist.netkeiba.com/?pid=stage_login"
+
+    ok, html = netkeiba_get(driver, login_url)
+    if not ok:
+        print("netkeiba login: ログインページ自体がブロック/制限の可能性")
+        return False
+
     try:
-        # UAを毎回更新（同一UA固定で弾かれる環境がある）
-        apply_netkeiba_headers(driver, ua=nk_random_ua())
-
-        login_url = "https://regist.netkeiba.com/?pid=stage_login"
-        driver.get(login_url)
-        nk_sleep()
-
-        # 400/ブロック検知
-        if looks_like_netkeiba_block(driver.page_source, driver.current_url):
-            print("netkeiba login: ブロック/400っぽい。待機して再試行します。")
-            nk_sleep(base_sec=6.0, jitter=4.0)
-            apply_netkeiba_headers(driver, ua=nk_random_ua())
-            driver.get(login_url)
-            nk_sleep()
-
-        html = driver.page_source
-        if looks_like_netkeiba_block(html, driver.current_url):
-            print("netkeiba login: ログインページ自体がブロックされています（400/制限の可能性）")
-            return False
-
-        # ID入力欄
+        # 入力欄（候補を広めに）
         id_candidates = [
             (By.NAME, "login_id"),
             (By.NAME, "userid"),
             (By.NAME, "id"),
             (By.ID, "login_id"),
             (By.CSS_SELECTOR, "input[type='text'][name*='login']"),
-            (By.CSS_SELECTOR, "input[type='email']"),
             (By.CSS_SELECTOR, "input[type='text']"),
         ]
+
         id_el = None
         for how, sel in id_candidates:
             try:
-                id_el = WebDriverWait(driver, 6).until(
+                id_el = WebDriverWait(driver, 5).until(
                     EC.visibility_of_element_located((how, sel))
                 )
                 if id_el:
@@ -367,17 +361,17 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
             except Exception:
                 continue
 
-        # PW入力欄
         pass_candidates = [
             (By.NAME, "pswd"),
             (By.NAME, "password"),
             (By.ID, "pswd"),
             (By.CSS_SELECTOR, "input[type='password']"),
         ]
+
         pw_el = None
         for how, sel in pass_candidates:
             try:
-                pw_el = WebDriverWait(driver, 6).until(
+                pw_el = WebDriverWait(driver, 5).until(
                     EC.visibility_of_element_located((how, sel))
                 )
                 if pw_el:
@@ -392,26 +386,20 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
         id_el.clear()
         id_el.send_keys(NETKEIBA_ID)
         time.sleep(0.2)
-
         pw_el.clear()
         pw_el.send_keys(NETKEIBA_PASS)
         time.sleep(0.2)
 
-        # ログインボタン
         btn_candidates = [
-            (By.CSS_SELECTOR, "input[type='submit'][value*='ログイン']"),
-            (By.CSS_SELECTOR, "button[type='submit']"),
             (By.CSS_SELECTOR, "input[type='submit']"),
-            (By.CSS_SELECTOR, ".Btn_Login"),
-            (By.CSS_SELECTOR, ".btn_login"),
-            (By.XPATH, "//input[@type='submit' and contains(@value,'ログイン')]"),
+            (By.CSS_SELECTOR, "button[type='submit']"),
+            (By.XPATH, "//input[@type='submit' and contains(@value, 'ログイン')]"),
         ]
+
         clicked = False
         for how, sel in btn_candidates:
             try:
-                btn = WebDriverWait(driver, 6).until(
-                    EC.element_to_be_clickable((how, sel))
-                )
+                btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((how, sel)))
                 btn.click()
                 clicked = True
                 break
@@ -422,35 +410,28 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
             print("netkeiba login: ログインボタンが見つかりません")
             return False
 
-        nk_sleep(base_sec=2.2, jitter=1.5)
+        time.sleep(1.2)
 
-        # 成功判定（複合）
-        html2 = driver.page_source
-        url2 = driver.current_url
+        # 成功判定（弱め）：ログインページから離れた/ログアウトが見える等
+        html2 = driver.page_source or ""
+        url2 = driver.current_url or ""
+        if _looks_like_netkeiba_block(html2, url2):
+            print("netkeiba login: ログイン後にブロック/制限が検出されました")
+            return False
 
-        ok_signals = 0
-        if "ログアウト" in html2 or "action=logout" in html2 or "logout" in html2.lower():
-            ok_signals += 1
-        if "stage_login" not in url2:
-            ok_signals += 1
-        if "マイページ" in html2:
-            ok_signals += 1
+        indicators = [
+            ("stage_login" not in url2),
+            ("ログアウト" in html2),
+            ("logout" in html2.lower()),
+            ("マイページ" in html2),
+        ]
+        score = sum(indicators)
+        print(f"netkeiba login: indicators={score}/4 url={url2}")
 
-        if ok_signals >= 2:
-            print("netkeiba login: ログイン成功")
-            return True
-
-        # ログイン失敗（エラー文言があれば表示）
-        if "エラー" in html2 or "入力" in html2 and "不正" in html2:
-            print("netkeiba login: ログイン失敗（認証エラーの可能性）")
-
-        print(f"netkeiba login: ログイン失敗の可能性 url={url2}")
-        return False
+        return score >= 1
 
     except Exception as e:
-        print(f"netkeiba login: 例外発生: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"netkeiba login exception: {e}")
         return False
 
 
@@ -711,6 +692,7 @@ def parse_syutuba(html: str) -> dict:
 # ==================================================
 def parse_netkeiba_speed_index(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
+
     table = soup.find("table", class_=lambda c: c and ("SpeedIndex_Table" in c))
     if not table or not table.tbody:
         return {}
@@ -748,74 +730,37 @@ def parse_netkeiba_speed_index(html: str) -> dict:
             "index2": cell_text("sk__index2"),
             "index3": cell_text("sk__index3"),
             "course": cell_text("sk__max_course_index"),
-            "avg5": cell_text("sk__average_index"),
+            "avg5":   cell_text("sk__average_index"),
         }
 
     return out
 
 
-def safe_get_netkeiba(driver: webdriver.Chrome, url: str, retries: int = 2) -> str:
-    """
-    netkeibaアクセス共通:
-    - UAを毎回更新
-    - 2〜3秒以上の間隔
-    - 400/ブロック時はバックオフして再試行
-    """
-    last_html = ""
-    for i in range(retries + 1):
-        apply_netkeiba_headers(driver, ua=nk_random_ua())
-        driver.get(url)
-        nk_sleep()
-
-        html = driver.page_source
-        last_html = html
-
-        if not looks_like_netkeiba_block(html, driver.current_url):
-            return html
-
-        wait = 5.0 + i * 6.0 + random.random() * 3.0
-        print(f"netkeiba blocked/400 detected. retry {i+1}/{retries}, sleep={wait:.1f}s")
-        time.sleep(wait)
-
-    return last_html
-
-
 def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -> dict:
+    """
+    ★ブロック検知したら空で返す（以後のリトライで負荷を上げない）
+    """
     url = f"https://race.netkeiba.com/race/speed.html?race_id={netkeiba_race_id}&type=shutuba&mode=default"
 
-    html = safe_get_netkeiba(driver, url, retries=2)
-
-    # ログイン要求なら一度ログインして取り直し
-    needs_login = False
-    if "無料会員登録" in html or "ログインして" in html or "会員登録" in html:
-        needs_login = True
-    if "stage_login" in driver.current_url or "login" in driver.current_url.lower():
-        needs_login = True
-
-    if needs_login and NETKEIBA_ID and NETKEIBA_PASS:
-        print(f"netkeiba speed: ログインが必要 (URL: {driver.current_url})")
-        ok = login_netkeiba(driver)
-        if ok:
-            html = safe_get_netkeiba(driver, url, retries=2)
-
-    # テーブル待機（JS遅延に備える）
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table.SpeedIndex_Table"))
-        )
-        time.sleep(0.6)
-        html = driver.page_source
-    except Exception as e:
-        print(f"netkeiba speed: テーブル待機エラー: {e}")
-
-    # ブロックっぽいなら空で返す（この後の処理は継続）
-    if looks_like_netkeiba_block(html, driver.current_url):
-        print("netkeiba speed: blocked/400 page. return empty.")
+    ok, html = netkeiba_get(driver, url)
+    if not ok:
+        print(f"netkeiba speed: ブロック/制限の可能性 -> skip ({url})")
         return {}
 
-    # パース実行
+    try:
+        WebDriverWait(driver, 8).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.SpeedIndex_Table"))
+        )
+        time.sleep(0.4)
+        html = driver.page_source or ""
+        if _looks_like_netkeiba_block(html, url):
+            print("netkeiba speed: テーブル表示前後でブロック検知 -> skip")
+            return {}
+    except Exception as e:
+        print(f"netkeiba speed: table wait error: {e}")
+
     result = parse_netkeiba_speed_index(html)
-    print(f"netkeiba speed: parsed {len(result)} horses")
+    print(f"netkeiba speed: parsed {len(result)} rows")
     return result
 
 
@@ -827,7 +772,7 @@ def keibabook_race_id_to_netkeiba_race_id(year: str, kai: str, place: str, day: 
 
 
 # ==================================================
-# ★修正:netkeiba 馬柱(5走) から「戦績」を抽出
+# ★修正:netkeiba 馬柱(5走) から「戦績」を正確に抽出
 # ==================================================
 def _extract_race_result_from_past_td(past_td) -> str:
     if past_td is None:
@@ -840,7 +785,6 @@ def _extract_race_result_from_past_td(past_td) -> str:
     data_item = past_td.find("div", class_="Data_Item")
     container = data_item if data_item else past_td
 
-    # Data01
     data01 = container.find("div", class_="Data01")
     date_str = ""
     place_str = ""
@@ -854,7 +798,6 @@ def _extract_race_result_from_past_td(past_td) -> str:
             if date_match:
                 raw_date = date_match.group(1)
                 date_str = raw_date.replace("/", ".")
-
             place_match = re.search(r"\d{4}[./]\d{1,2}[./]\d{1,2}\s*(.+)", first_span_text)
             if place_match:
                 place_str = place_match.group(1).strip()
@@ -866,7 +809,6 @@ def _extract_race_result_from_past_td(past_td) -> str:
             if rank_num and rank_num not in ["中", "取", "除"]:
                 rank_num = re.sub(r"\D", "", rank_num)
 
-    # Data02
     data02 = container.find("div", class_="Data02")
     race_name = ""
     class_str = ""
@@ -888,7 +830,6 @@ def _extract_race_result_from_past_td(past_td) -> str:
         if grade_span:
             class_str = grade_span.get_text(strip=True)
 
-    # Data05
     data05 = container.find("div", class_="Data05")
     course_str = ""
     if data05:
@@ -897,11 +838,11 @@ def _extract_race_result_from_past_td(past_td) -> str:
         if course_match:
             course_str = course_match.group(0)
 
-    # Data03
     data03 = container.find("div", class_="Data03")
     field_info = ""
     jockey = ""
     weight = ""
+
     if data03:
         text = data03.get_text(" ", strip=True)
         head_match = re.search(r"(\d+)頭", text)
@@ -929,7 +870,6 @@ def _extract_race_result_from_past_td(past_td) -> str:
             if jockey_match2:
                 jockey = jockey_match2.group(1).strip()
 
-    # Data06
     data06 = container.find("div", class_="Data06")
     passing = ""
     if data06:
@@ -960,11 +900,12 @@ def _extract_race_result_from_past_td(past_td) -> str:
     if rank_num:
         result_parts.append(f"...最終{rank_num}着")
 
-    return " ".join(result_parts) if result_parts else ""
+    return " ".join(result_parts).strip()
 
 
 def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
     soup = BeautifulSoup(html, "html.parser")
+
     table = soup.find("table", id="sort_table")
     if not table:
         table = soup.find("table", class_=lambda c: c and "Shutuba_Past5_Table" in str(c))
@@ -973,10 +914,13 @@ def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
     if not table:
         return {}
 
-    tbody = table.find("tbody") or table
-    out = {}
+    tbody = table.find("tbody")
+    if not tbody:
+        tbody = table
 
+    out = {}
     rows = tbody.find_all("tr", class_=lambda c: c and "HorseList" in str(c))
+
     for tr in rows:
         umaban = ""
         waku_tds = tr.find_all("td", class_=lambda c: c and "Waku" in str(c))
@@ -995,7 +939,8 @@ def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
 
         past_summaries = []
         for td in past_tds[:take_last_n]:
-            past_summaries.append(_extract_race_result_from_past_td(td))
+            summary = _extract_race_result_from_past_td(td)
+            past_summaries.append(summary)
 
         while len(past_summaries) < take_last_n:
             past_summaries.append("")
@@ -1006,29 +951,27 @@ def parse_netkeiba_shutuba_past5(html: str, take_last_n: int = 3) -> dict:
 
 
 def fetch_netkeiba_past5_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -> dict:
+    """
+    ★ブロック検知したら空で返す（以後のリトライで負荷を上げない）
+    """
     url = f"https://race.netkeiba.com/race/shutuba_past.html?race_id={netkeiba_race_id}&rf=shutuba_submenu"
 
-    html = safe_get_netkeiba(driver, url, retries=2)
+    ok, html = netkeiba_get(driver, url)
+    if not ok:
+        print(f"netkeiba past5: ブロック/制限の可能性 -> skip ({url})")
+        return {}
 
-    # ログイン要求なら一度ログインして取り直し
-    if (("無料会員登録" in html or "ログイン" in html) or ("stage_login" in driver.current_url)) and NETKEIBA_ID and NETKEIBA_PASS:
-        ok = login_netkeiba(driver)
-        if ok:
-            html = safe_get_netkeiba(driver, url, retries=2)
-
-    # JS待機
     try:
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 8).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table#sort_table, table.Shutuba_Past5_Table"))
         )
-        time.sleep(0.6)
-        html = driver.page_source
-    except Exception:
-        pass
-
-    if looks_like_netkeiba_block(html, driver.current_url):
-        print("netkeiba past5: blocked/400 page. return empty.")
-        return {}
+        time.sleep(0.4)
+        html = driver.page_source or ""
+        if _looks_like_netkeiba_block(html, url):
+            print("netkeiba past5: テーブル表示前後でブロック検知 -> skip")
+            return {}
+    except Exception as e:
+        print(f"netkeiba past5: wait error: {e}")
 
     return parse_netkeiba_shutuba_past5(html, take_last_n=3)
 
@@ -1043,11 +986,13 @@ def fetch_danwa_dict(driver, race_id: str):
     html = driver.page_source
     return html, parse_race_info(html), parse_danwa_comments(html)
 
+
 def fetch_zenkoso_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/syoin/{race_id}"
     driver.get(url)
     time.sleep(0.8)
     return parse_zenkoso_interview(driver.page_source)
+
 
 def fetch_cyokyo_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
@@ -1059,6 +1004,7 @@ def fetch_cyokyo_dict(driver, race_id: str):
     except Exception:
         pass
     return parse_cyokyo(driver.page_source)
+
 
 def fetch_syutuba_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/syutuba/{race_id}"
@@ -1114,6 +1060,7 @@ def detect_meet_candidates(driver, max_candidates: int = 12):
         })
 
     return candidates
+
 
 def auto_detect_meet_candidates():
     driver = build_driver()
@@ -1222,27 +1169,29 @@ def run_all_races(target_races=None):
 
     base_id = f"{YEAR}{KAI}{PLACE}{DAY}"
     place_name = PLACE_NAMES.get(PLACE, "不明")
-
     combined_blocks: list[str] = []
 
     driver = build_driver()
+
+    # netkeiba機能を一度でもブロック検知したらOFFにする
+    netkeiba_enabled = True
 
     try:
         st.info("🔑 ログイン中...(競馬ブック)")
         login_keibabook(driver)
         st.success("✅ 競馬ブック ログイン完了")
 
-        # ★netkeiba: 最初に一度だけログイン（ただし失敗しても処理継続）
+        # netkeiba: ログインは「任意」。ブロックされてたら即OFF
         netkeiba_logged_in = False
         if NETKEIBA_ID and NETKEIBA_PASS:
             st.info("🔑 netkeiba ログイン中...")
             netkeiba_logged_in = login_netkeiba(driver)
             if netkeiba_logged_in:
-                st.success("✅ netkeiba ログイン完了（セッション確立）")
+                st.success("✅ netkeiba ログイン（試行）完了")
             else:
-                st.warning("⚠️ netkeiba ログインに失敗しました。UA/アクセス間隔/IP制限の可能性があります。")
+                st.warning("⚠️ netkeiba ログインに失敗しました。通信制限/ブロックの可能性があります。")
         else:
-            st.info("ℹ️ netkeiba認証情報が未設定のため、無料範囲のデータのみ取得します。")
+            st.info("ℹ️ netkeiba認証情報が未設定のため、netkeiba取得はスキップされることがあります。")
 
         for r in race_numbers:
             race_num = f"{r:02}"
@@ -1268,35 +1217,27 @@ def run_all_races(target_races=None):
 
                 # netkeiba 指数
                 speed_dict = {}
-                if netkeiba_race_id:
-                    try:
-                        status_area.info(f"📊 netkeiba 指数を取得中... (race_id: {netkeiba_race_id})")
-                        speed_dict = fetch_netkeiba_speed_dict(driver, netkeiba_race_id)
-                        if speed_dict:
-                            status_area.success(f"✅ netkeiba 指数取得完了 ({len(speed_dict)}頭分)")
-                        else:
-                            status_area.warning("⚠️ netkeiba 指数が取得できませんでした（400/制限/要ログインの可能性）")
-                    except Exception as e:
-                        print("netkeiba speed fetch error:", e)
-                        status_area.warning(f"⚠️ netkeiba 指数取得エラー: {str(e)}")
-                        speed_dict = {}
+                if netkeiba_enabled and netkeiba_race_id:
+                    status_area.info(f"📊 netkeiba 指数を取得中... (race_id: {netkeiba_race_id})")
+                    speed_dict = fetch_netkeiba_speed_dict(driver, netkeiba_race_id)
+                    if speed_dict:
+                        status_area.success(f"✅ netkeiba 指数取得完了 ({len(speed_dict)}頭分)")
+                    else:
+                        status_area.warning("⚠️ netkeiba 指数が取得できませんでした（制限/ブロックの可能性）")
+                        # 一度でも怪しければOFF（負荷増を避ける）
+                        netkeiba_enabled = False
 
-                # netkeiba 戦績（馬柱）
+                # netkeiba 戦績
                 past5_dict = {}
-                if netkeiba_race_id:
-                    try:
-                        status_area.info("📝 netkeiba 戦績を取得中...")
-                        past5_dict = fetch_netkeiba_past5_dict(driver, netkeiba_race_id)
-                        if past5_dict:
-                            status_area.success(f"✅ netkeiba 戦績取得完了 ({len(past5_dict)}頭分)")
-                        else:
-                            status_area.warning("⚠️ netkeiba 戦績が取得できませんでした（400/制限/要ログインの可能性）")
-                    except Exception as e:
-                        print("netkeiba past5 fetch error:", e)
-                        status_area.warning(f"⚠️ netkeiba 戦績取得エラー: {str(e)}")
-                        past5_dict = {}
+                if netkeiba_enabled and netkeiba_race_id:
+                    status_area.info("📝 netkeiba 戦績を取得中...")
+                    past5_dict = fetch_netkeiba_past5_dict(driver, netkeiba_race_id)
+                    if past5_dict:
+                        status_area.success(f"✅ netkeiba 戦績取得完了 ({len(past5_dict)}頭分)")
+                    else:
+                        status_area.warning("⚠️ netkeiba 戦績が取得できませんでした（制限/ブロックの可能性）")
+                        netkeiba_enabled = False
 
-                # 結合
                 merged = []
                 umaban_list = (
                     sorted(syutuba_dict.keys(), key=lambda x: int(x))
@@ -1349,6 +1290,7 @@ def run_all_races(target_races=None):
                     if not c:
                         c = _find_by_name_key(cyokyo_dict, bamei)
                     c = c or {}
+
                     c_tanpyo = (c.get("tanpyo") or "").strip()
                     c_detail = (c.get("detail") or "").strip()
 

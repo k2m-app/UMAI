@@ -11,7 +11,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from bs4 import BeautifulSoup
-from supabase import create_client, Client
 
 # ==================================================
 # 【設定エリア】secretsから読み込み
@@ -58,9 +57,11 @@ def set_race_params(year, kai, place, day):
     KAI = str(kai).zfill(2)
     PLACE = str(place).zfill(2)
     DAY = str(day).zfill(2)
+
 def get_current_params():
     """現在のパラメータ（UI表示用）"""
     return YEAR, KAI, PLACE, DAY
+
 
 # ==================================================
 # ★netkeiba 指数セル正規化
@@ -117,35 +118,6 @@ def render_copy_button(text: str, label: str, dom_id: str):
     </script>
     """
     components.html(html, height=54)
-
-
-# ==================================================
-# Supabase
-# ==================================================
-@st.cache_resource
-def get_supabase_client() -> Client | None:
-    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        return None
-    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-
-def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, ai_answer):
-    supabase = get_supabase_client()
-    if supabase is None:
-        return
-    data = {
-        "year": str(year),
-        "kai": str(kai),
-        "place_code": str(place_code),
-        "place_name": place_name,
-        "day": str(day),
-        "race_num": race_num_str,
-        "race_id": race_id,
-        "output_text": ai_answer,
-    }
-    try:
-        supabase.table("history").insert(data).execute()
-    except Exception as e:
-        print("Supabase insert error:", e)
 
 
 # ==================================================
@@ -233,31 +205,36 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
         pass
 
     try:
-        # 戻り先URLを指定してログイン画面へ
-        login_url = "https://regist.netkeiba.com/?pid=stage_login&return_url=https%3A%2F%2Fwww.netkeiba.com%2F"
+        # ★ユーザー指定のURLを使用
+        login_url = "https://regist.netkeiba.com/account/?pid=login"
         driver.get(login_url)
         wait = WebDriverWait(driver, 10)
 
-        # ID/PASS入力
+        # ID入力 (name="login_id" が一般的だが念のため wait)
         id_el = wait.until(EC.visibility_of_element_located((By.NAME, "login_id")))
         id_el.clear()
         id_el.send_keys(NETKEIBA_ID)
 
+        # PW入力
         pw_el = wait.until(EC.visibility_of_element_located((By.NAME, "pswd")))
         pw_el.clear()
         pw_el.send_keys(NETKEIBA_PASS)
 
         # ログインボタン押下
+        # このページは複数のログインボタンがある可能性があるため、フォーム内の送信ボタンを優先
         btn_candidates = [
+            (By.CSS_SELECTOR, "input[type='image'][alt='ログイン']"),
             (By.CSS_SELECTOR, "input[type='submit']"),
             (By.CSS_SELECTOR, "button[type='submit']"),
             (By.CSS_SELECTOR, ".Btn_Login"),
-            (By.CSS_SELECTOR, ".login_btn"),
+            (By.XPATH, "//button[contains(text(), 'ログイン')]"),
+            (By.XPATH, "//input[@value='ログイン']"),
         ]
         
         clicked = False
         for how, sel in btn_candidates:
             try:
+                # フォーム近くのボタンであることを確認したいが、まずは見つかったものをクリック
                 btn = driver.find_element(how, sel)
                 if btn.is_displayed() and btn.is_enabled():
                     btn.click()
@@ -267,11 +244,13 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
                 continue
         
         if not clicked:
+            print("Login button not found.")
             return False
 
         # ページ遷移待機（URL変化 or ログアウトボタン出現）
+        # accountページからトップなどに遷移するのを待つ
         try:
-            wait.until(lambda d: "regist.netkeiba.com" not in d.current_url)
+            wait.until(lambda d: "pid=login" not in d.current_url)
         except TimeoutException:
             pass # タイムアウトしても成功している場合がある
 
@@ -281,6 +260,8 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
         if "ログアウト" in html or "action=logout" in html:
             return True
         
+        # 失敗時ログ
+        print(f"Login failed. Current URL: {driver.current_url}")
         return False
 
     except Exception as e:
@@ -758,7 +739,7 @@ def run_all_races(target_races=None):
             
             if full_ans:
                 status.success("完了")
-                save_history(YEAR, KAI, PLACE, place_name, DAY, race_num, race_id, full_ans)
+                # 履歴保存なし
                 combined_blocks.append(f"【{place_name} {r}R】\n{full_ans}\n")
             else:
                 status.error("回答生成失敗")

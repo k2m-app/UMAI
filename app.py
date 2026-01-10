@@ -118,17 +118,36 @@ with st.sidebar.expander("① 直近の開催候補（複数場）", expanded=Tr
 with st.sidebar.expander("② 開催パラメータ（手動）", expanded=False):
     cur_year, cur_kai, cur_place, cur_day = keiba_bot.get_current_params()
 
-    # 誤入力しづらいUI（軽量＆安定）
     year = st.text_input("年 (YYYY)", value=str(cur_year), key="in_year")
-    kai = st.text_input("回 (2桁)", value=str(cur_kai).zfill(2), key="in_kai")
+
+    kai_options = [f"{i:02d}" for i in range(1, 7)]     # 01〜06
+    day_options = [f"{i:02d}" for i in range(1, 15)]    # 01〜14
+
+    # 現在値が範囲外でも落ちないように安全に index を作る
+    kai_default = str(cur_kai).zfill(2)
+    day_default = str(cur_day).zfill(2)
+
+    kai = st.selectbox(
+        "回 (01〜06)",
+        options=kai_options,
+        index=kai_options.index(kai_default) if kai_default in kai_options else 0,
+        key="in_kai",
+    )
+
     place = st.selectbox(
         "競馬場",
         options=list(PLACE_NAMES.keys()),
         index=list(PLACE_NAMES.keys()).index(cur_place) if cur_place in PLACE_NAMES else 0,
         format_func=lambda x: f"{x} : {PLACE_NAMES.get(x,'?')}",
-        key="in_place"
+        key="in_place",
     )
-    day = st.text_input("日 (2桁)", value=str(cur_day).zfill(2), key="in_day")
+
+    day = st.selectbox(
+        "日 (01〜14)",
+        options=day_options,
+        index=day_options.index(day_default) if day_default in day_options else 0,
+        key="in_day",
+    )
 
     if st.button("✅ 手動設定を反映", key="btn_apply_manual"):
         keiba_bot.set_race_params(year, kai, place, day)

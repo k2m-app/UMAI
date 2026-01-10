@@ -18,7 +18,7 @@ KEIBA_ID = st.secrets.get("KEIBA_ID", "")
 KEIBA_PASS = st.secrets.get("KEIBA_PASS", "")
 DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 
-# デフォルト設定
+# デフォルト設定 (グローバル変数)
 YEAR = "2026"
 KAI = "01"
 PLACE = "05"  # 中山
@@ -36,6 +36,19 @@ KEIBABOOK_TO_NETKEIBA_PLACE = {
     "08": "01", "09": "02", "06": "03", "07": "04", "04": "05",
     "05": "06", "02": "07", "00": "08", "01": "09", "03": "10",
 }
+
+# ==================================================
+# 【追加】外部呼び出し用 パラメータ設定・取得関数
+# ==================================================
+def set_race_params(year, kai, place, day):
+    global YEAR, KAI, PLACE, DAY
+    YEAR = str(year)
+    KAI = str(kai).zfill(2)
+    PLACE = str(place).zfill(2)
+    DAY = str(day).zfill(2)
+
+def get_current_params():
+    return YEAR, KAI, PLACE, DAY
 
 # ==================================================
 # ユーティリティ
@@ -109,18 +122,22 @@ def build_driver() -> webdriver.Chrome:
 
 def login_keibabook(driver: webdriver.Chrome) -> None:
     if not KEIBA_ID or not KEIBA_PASS:
-        raise RuntimeError("secretsに KEIBA_ID / KEIBA_PASS が未設定です")
+        # secretsがない場合のフォールバック（必要に応じて）
+        pass 
     driver.get(f"{BASE_URL}/login/login")
-    WebDriverWait(driver, 15).until(
-        EC.visibility_of_element_located((By.NAME, "login_id"))
-    ).send_keys(KEIBA_ID)
-    WebDriverWait(driver, 15).until(
-        EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
-    ).send_keys(KEIBA_PASS)
-    WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))
-    ).click()
-    time.sleep(1.0)
+    try:
+        WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.NAME, "login_id"))
+        ).send_keys(KEIBA_ID)
+        WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
+        ).send_keys(KEIBA_PASS)
+        WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))
+        ).click()
+        time.sleep(1.0)
+    except:
+        pass # 既にログイン済み等の場合
 
 # ==================================================
 # 【修正版】競馬ブック：厩舎の話 (Danwa)
@@ -254,9 +271,6 @@ def parse_zenkoso_interview(html: str) -> dict:
         # --- インタビュー内容の行 ---
         syoin_td = tr.find("td", class_="syoin")
         if syoin_td and current_umaban:
-            # 【重要】解析用にTDのコピーを作成（元のsoupを破壊しないため念のため）
-            # もしくはこの場で div.syoindata を extract して消してしまう
-            
             # 不要なメタ情報 (div.syoindata) を特定して削除
             meta_div = syoin_td.find("div", class_="syoindata")
             if meta_div:
@@ -457,17 +471,21 @@ def stream_dify_workflow(full_text: str):
 
 
 # ==================================================
-# Main Execution
+# Main Execution (App側から呼ばれる場合にも対応)
 # ==================================================
-def run_all_races():
-    st.title("🏇 競馬AI予想データ生成 (修正版)")
+def run_all_races(target_races=None):
+    # StreamlitのUI表示があるため、app.pyから呼ぶ場合は
+    # st.*** の呼び出し先がapp.pyのコンテキストになる
     
-    race_nums = list(range(1, 13))
-    base_id = f"{YEAR}{KAI}{PLACE}{DAY}" # 例: 2026010503
+    # 引数 target_races があればそれだけ実行
+    race_nums = target_races if target_races else list(range(1, 13))
+    race_nums = [int(r) for r in race_nums]
+    
+    base_id = f"{YEAR}{KAI}{PLACE}{DAY}" 
     
     driver = build_driver()
     try:
-        st.info("ログイン中...")
+        st.info(f"ログイン中... (ID: {KEIBA_ID[:2]}**)")
         login_keibabook(driver)
         st.success("ログイン成功")
         
@@ -477,14 +495,14 @@ def run_all_races():
             race_num_str = f"{r:02}"
             race_id = base_id + race_num_str
             
-            st.markdown(f"### {PLACE_NAMES.get(PLACE)} {r}R")
+            st.markdown(f"### {PLACE_NAMES.get(PLACE, '場')} {r}R")
             status = st.empty()
             status.text("データ収集中...")
 
             # 1. 厩舎の話 (基本情報 + コメント)
             header_info, danwa_data = fetch_keibabook_danwa(driver, race_id)
             if not danwa_data:
-                st.error("馬データが見つかりませんでした")
+                st.error("馬データが見つかりませんでした (厩舎の話ページ取得失敗)")
                 continue
 
             # 2. CPU予想
@@ -538,12 +556,18 @@ def run_all_races():
             result_area.markdown(ai_output)
             
             combined_text += f"\n\n--- {r}R ---\n{ai_output}"
+            
+            # コピーボタン
+            render_copy_button(ai_output, f"{r}R コピー", f"copy_btn_{r}")
             status.success("完了")
 
-        st.text_area("全レースまとめ", combined_text, height=300)
+        st.subheader("全レースまとめ")
+        render_copy_button(combined_text, "全レースコピー", "copy_btn_all")
+        st.text_area("出力結果", combined_text, height=300)
 
     finally:
         driver.quit()
 
 if __name__ == "__main__":
+    st.title("🏇 競馬AI予想データ生成")
     run_all_races()

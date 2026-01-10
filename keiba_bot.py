@@ -40,7 +40,6 @@ PLACE_NAMES = {
 }
 
 # ★追加：競馬ブック PLACEコード → netkeiba 競馬場コード
-# ユーザー提示：
 # 01札幌 02函館 03福島 04新潟 05東京 06中山 07中京 08京都 09阪神 10小倉
 KEIBABOOK_TO_NETKEIBA_PLACE = {
     "08": "01",  # 札幌
@@ -66,6 +65,54 @@ def set_race_params(year, kai, place, day):
 def get_current_params():
     """現在のパラメータ（UI表示用）"""
     return YEAR, KAI, PLACE, DAY
+
+
+# ==================================================
+# ★追加：netkeiba 指数セル正規化（1000は必ず「無」）
+# ==================================================
+def normalize_netkeiba_index_cell(raw: str) -> str:
+    """
+    目的：
+    - netkeiba指数が「未」「-」のとき内部的に1000になるケースを「無」に統一
+    - "1070 70" 等の混在から本命値だけを抽出
+    ルール：
+    - "1000" は無条件で「無」
+    - "未" / "-" / "－" / 空 は「無」
+    - 数字は 3桁以下を優先して末尾を採用（70, 54, 107など）
+    - それも無ければ「無」
+    """
+    if raw is None:
+        return "無"
+
+    t = str(raw).replace("\xa0", " ").strip()
+    if t == "":
+        return "無"
+
+    # 明示的な未/欠損
+    if "未" in t:
+        return "無"
+    if "－" in t or "-" in t:
+        return "無"
+
+    # 数字抽出
+    nums = re.findall(r"\d+", t)
+    if not nums:
+        return "無"
+
+    # 1000が含まれる（または単体）なら「無」
+    if any(n == "1000" for n in nums):
+        # ただし "1070 70" のように1000以外の有効値がある場合は有効値を優先
+        # → 3桁以下があればそれを採用、なければ無
+        short = [n for n in nums if len(n) <= 3 and n != "1000"]
+        return short[-1] if short else "無"
+
+    # 3桁以下優先（多くの場合、ここが本命の指数）
+    short = [n for n in nums if len(n) <= 3]
+    if short:
+        return short[-1]
+
+    # フォールバック（本来は起きにくい）
+    return "無"
 
 
 # ==================================================
@@ -187,19 +234,14 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
 def login_netkeiba(driver: webdriver.Chrome) -> bool:
     """
     成功したら True、失敗/未設定なら False
-    netkeibaのログイン画面は変更される可能性があるので
-    できるだけ「壊れにくい」書き方にしています。
     """
     if not NETKEIBA_ID or not NETKEIBA_PASS:
         return False
 
     try:
-        # loginページ（netkeibaはここが定番）
         driver.get("https://regist.netkeiba.com/?pid=stage_login")
         time.sleep(0.8)
 
-        # 入力欄（nameやidが変わる可能性があるので複数候補）
-        # まずはよくある form 構造を探す
         id_candidates = [
             (By.NAME, "login_id"),
             (By.NAME, "userid"),
@@ -238,8 +280,6 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
         pw_el.clear()
         pw_el.send_keys(NETKEIBA_PASS)
 
-        # submit
-        # loginボタンも複数候補
         btn_candidates = [
             (By.CSS_SELECTOR, "input[type='submit']"),
             (By.CSS_SELECTOR, "button[type='submit']"),
@@ -260,12 +300,10 @@ def login_netkeiba(driver: webdriver.Chrome) -> bool:
 
         time.sleep(1.2)
 
-        # ログイン判定：ログアウトリンクが出る / no_login_show が消える等
         html = driver.page_source
         if "ログアウト" in html or "action=logout" in html:
             return True
 
-        # うまく判定できなくても cookies は入っている可能性があるので True 寄りにしない
         return False
 
     except Exception:
@@ -525,17 +563,15 @@ def parse_syutuba(html: str) -> dict:
 
 
 # ==================================================
-# ★追加：netkeiba タイム指数 parser
+# ★追加：netkeiba タイム指数 parser（1000→無 を適用）
 # ==================================================
 def parse_netkeiba_speed_index(html: str) -> dict:
     """
     netkeiba speed.html の出馬表から指数を抜く。
-    戻り値：{ "1": {"index1":"83","index2":"65","index3":"83","course":"83","avg5":"81"}, ... }
-    取れない値は "" にする（後で表示側でフォールバック）
+    戻り値：{ "1": {"index1":"70","index2":"54","index3":"無","course":"無","avg5":"無"}, ... }
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # 代表的なテーブル class（あなたのHTML通り）
     table = soup.find("table", class_=lambda c: c and ("SpeedIndex_Table" in c))
     if not table or not table.tbody:
         return {}
@@ -543,7 +579,6 @@ def parse_netkeiba_speed_index(html: str) -> dict:
     out = {}
 
     for tr in table.tbody.find_all("tr", class_=lambda c: c and ("HorseList" in c.split()), recursive=False):
-        # 馬番
         um_td = tr.find("td", class_=lambda c: c and "sk__umaban" in c)
         if not um_td:
             continue
@@ -554,18 +589,16 @@ def parse_netkeiba_speed_index(html: str) -> dict:
         def cell_text(cell_class: str) -> str:
             td = tr.find("td", class_=lambda c: c and cell_class in c.split())
             if not td:
-                return ""
+                return "無"
             txt = td.get_text(" ", strip=True)
-            txt = txt.replace("\xa0", " ").strip()
-            # 「未」や「-」もそのまま返す（表示側で使える）
-            return txt
+            return normalize_netkeiba_index_cell(txt)
 
         out[umaban] = {
-            "index1": cell_text("sk__index1"),           # 前走
-            "index2": cell_text("sk__index2"),           # 2走
-            "index3": cell_text("sk__index3"),           # 3走
-            "course": cell_text("sk__max_course_index"), # コース最高
-            "avg5": cell_text("sk__average_index"),      # 5走平均
+            "index1": cell_text("sk__index1"),             # 前走
+            "index2": cell_text("sk__index2"),             # 2走前
+            "index3": cell_text("sk__index3"),             # 3走前
+            "course": cell_text("sk__max_course_index"),   # コース最高
+            "avg5":   cell_text("sk__average_index"),      # 5走平均
         }
 
     return out
@@ -578,7 +611,6 @@ def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -
     url = f"https://race.netkeiba.com/race/speed.html?race_id={netkeiba_race_id}&type=shutuba&mode=default"
     driver.get(url)
 
-    # テーブルが出るまで少し待つ（JS依存が薄いが、保険）
     try:
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table.SpeedIndex_Table"))
@@ -588,8 +620,7 @@ def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -
 
     html = driver.page_source
 
-    # ログインが必要そうなら、1回だけログインして再取得
-    # （「ログイン」ボタンや no_login_show が出る等の簡易判定）
+    # ログインが必要そうなら 1回だけログインして再取得
     if ("無料会員登録" in html or "ログイン" in html) and NETKEIBA_ID and NETKEIBA_PASS:
         ok = login_netkeiba(driver)
         if ok:
@@ -602,12 +633,10 @@ def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -
 
 def keibabook_race_id_to_netkeiba_race_id(year: str, kai: str, place: str, day: str, race_num_2: str) -> str:
     """
-    競馬ブックのパラメータ（YEAR,KAI,PLACE,DAY）から netkeiba race_id を作る。
     netkeiba race_id = YYYY + (netkeiba場コード2桁) + 回2桁 + 日2桁 + R2桁
     """
     nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place)
     if not nk_place:
-        # 変換できないときは空扱い（呼び出し側でケア）
         return ""
     return f"{str(year)}{nk_place}{str(kai).zfill(2)}{str(day).zfill(2)}{str(race_num_2).zfill(2)}"
 
@@ -809,8 +838,7 @@ def run_all_races(target_races=None):
         login_keibabook(driver)
         st.success("✅ 競馬ブック ログイン完了")
 
-        # ★netkeibaは「必要なら」ログイン（失敗しても続行）
-        netkeiba_logged_in = False
+        # netkeibaは「必要なら」ログイン（失敗しても続行）
         if NETKEIBA_ID and NETKEIBA_PASS:
             st.info("🔑 netkeiba ログイン確認中（必要なら）...")
             netkeiba_logged_in = login_netkeiba(driver)
@@ -823,7 +851,6 @@ def run_all_races(target_races=None):
             race_num = f"{r:02}"
             race_id = base_id + race_num
 
-            # ★netkeiba race_id
             netkeiba_race_id = keibabook_race_id_to_netkeiba_race_id(YEAR, KAI, PLACE, DAY, race_num)
 
             st.markdown(f"### {place_name} {r}R")
@@ -849,7 +876,7 @@ def run_all_races(target_races=None):
                 if not syutuba_dict:
                     status_area.warning("⚠️ 出馬表が取得できませんでした（全頭保証できない可能性）。")
 
-                # ★A-4 netkeiba 指数（取れなくても続行）
+                # A-4 netkeiba 指数（取れなくても続行）
                 speed_dict = {}
                 if netkeiba_race_id:
                     try:
@@ -923,18 +950,16 @@ def run_all_races(target_races=None):
                     else:
                         cyokyo_block = "  【調教】 （情報なし）\n"
 
-                    # ★指数（netkeiba）
+                    # 指数（netkeiba）※すべて normalize 済みの dict になってるが念のため再正規化
                     sp = speed_dict.get(umaban, {}) if isinstance(speed_dict, dict) else {}
-                    idx1 = (sp.get("index1") or "").strip()
-                    idx2 = (sp.get("index2") or "").strip()
-                    idx3 = (sp.get("index3") or "").strip()
-                    course = (sp.get("course") or "").strip()
-                    avg5 = (sp.get("avg5") or "").strip()
 
-                    if idx1 or idx2 or idx3 or course or avg5:
-                        speed_line = f"  【指数】 前走{idx1 or '－'}、2走{idx2 or '－'}、3走{idx3 or '－'}、コース最高{course or '－'}、5走平均{avg5 or '－'}\n"
-                    else:
-                        speed_line = "  【指数】 （情報なし）\n"
+                    idx1 = normalize_netkeiba_index_cell(sp.get("index1", "無"))
+                    idx2 = normalize_netkeiba_index_cell(sp.get("index2", "無"))
+                    idx3 = normalize_netkeiba_index_cell(sp.get("index3", "無"))
+                    course = normalize_netkeiba_index_cell(sp.get("course", "無"))
+                    avg5 = normalize_netkeiba_index_cell(sp.get("avg5", "無"))
+
+                    speed_line = f"  【指数】 前走:{idx1}、2走前:{idx2}、3走前:{idx3}、コース最高:{course}、5走平均:{avg5}\n"
 
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"

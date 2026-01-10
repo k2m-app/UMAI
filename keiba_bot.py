@@ -19,10 +19,11 @@ KEIBA_PASS = st.secrets.get("KEIBA_PASS", "")
 DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 
 # デフォルト設定 (グローバル変数)
-YEAR = "2026"
-KAI = "01"
+# 必要に応じてここを変更してください
+YEAR = "2025"
+KAI = "05"
 PLACE = "05"  # 中山
-DAY = "03"
+DAY = "08"
 
 BASE_URL = "https://s.keibabook.co.jp"
 
@@ -36,19 +37,6 @@ KEIBABOOK_TO_NETKEIBA_PLACE = {
     "08": "01", "09": "02", "06": "03", "07": "04", "04": "05",
     "05": "06", "02": "07", "00": "08", "01": "09", "03": "10",
 }
-
-# ==================================================
-# パラメータ設定・取得関数
-# ==================================================
-def set_race_params(year, kai, place, day):
-    global YEAR, KAI, PLACE, DAY
-    YEAR = str(year)
-    KAI = str(kai).zfill(2)
-    PLACE = str(place).zfill(2)
-    DAY = str(day).zfill(2)
-
-def get_current_params():
-    return YEAR, KAI, PLACE, DAY
 
 # ==================================================
 # ユーティリティ
@@ -122,7 +110,7 @@ def build_driver() -> webdriver.Chrome:
 
 def login_keibabook(driver: webdriver.Chrome) -> None:
     if not KEIBA_ID or not KEIBA_PASS:
-        pass 
+        return 
     driver.get(f"{BASE_URL}/login/login")
     try:
         WebDriverWait(driver, 5).until(
@@ -218,57 +206,43 @@ def fetch_keibabook_danwa(driver, race_id: str):
     return parse_race_info_from_danwa(html), parse_danwa_horses(html)
 
 # ==================================================
-# 競馬ブック：調教 (Chokyo) 【新規追加】
+# 競馬ブック：調教 (Chokyo)
 # ==================================================
 def parse_keibabook_chokyo(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     data = {}
 
-    # 全ての cyokyo テーブルを取得 (各馬ごとにテーブルが分かれている場合と行で分かれている場合がある)
-    # 提供されたHTMLでは、<table class="default cyokyo"> が複数ある、または行で構成されている。
-    # ここではclass="cyokyo"を持つテーブルを探す
     tables = soup.find_all("table", class_="cyokyo")
 
     for tbl in tables:
-        # 馬番の取得
         umaban_td = tbl.find("td", class_="umaban")
         if not umaban_td:
             continue
         umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
 
-        # 短評の取得
         tanpyo_td = tbl.find("td", class_="tanpyo")
         tanpyo = _clean_text_ja(tanpyo_td.get_text(strip=True)) if tanpyo_td else "なし"
 
-        # 詳細データの取得
-        # 通常、馬番行の次の行(colspan=5のセル)に詳細が入っている
-        # BeautifulSoupで同じテーブル内の次のtrを探すか、構造的に取得する
         details_text_parts = []
-        
-        # テーブル内の全DL(日付・場所・強さ)とTable(タイム)を順番に取得
         detail_cell = tbl.find("td", colspan="5")
         if detail_cell:
             for child in detail_cell.children:
                 if child.name == 'dl' and 'dl-table' in child.get('class', []):
-                    # 日付、コース、強さなど (例: (前回) 10/29 栗CW 良 / 一杯に追う)
                     dt_texts = [c.get_text(strip=True) for c in child.find_all(['dt', 'dd'])]
                     line = " ".join(dt_texts)
                     details_text_parts.append(line)
                 
                 elif child.name == 'table' and 'cyokyodata' in child.get('class', []):
-                    # タイムデータ
                     time_tr = child.find("tr", class_="time")
                     if time_tr:
                         times = [td.get_text(strip=True) for td in time_tr.find_all("td")]
                         details_text_parts.append(" ".join(times))
                     
-                    # 併せ馬データ
                     awase_tr = child.find("tr", class_="awase")
                     if awase_tr:
                         awase_txt = _clean_text_ja(awase_tr.get_text(strip=True))
                         details_text_parts.append(awase_txt)
 
-            # 攻め解説の取得
             semekaisetu_div = detail_cell.find("div", class_="semekaisetu")
             if semekaisetu_div:
                 kaisetu_p = semekaisetu_div.find("p")
@@ -290,7 +264,6 @@ def fetch_keibabook_chokyo(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
     driver.get(url)
     try:
-        # テーブルが表示されるまで待機
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CLASS_NAME, "cyokyo"))
         )
@@ -351,12 +324,13 @@ def fetch_zenkoso_interview(driver, race_id: str):
     return parse_zenkoso_interview(driver.page_source)
 
 # ==================================================
-# 競馬ブック：CPU予想
+# 競馬ブック：CPU予想 (新馬対応版)
 # ==================================================
-def parse_keibabook_cpu(html: str) -> dict:
+def parse_keibabook_cpu(html: str, is_shinba: bool = False) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     data = {}
 
+    # --- スピード指数テーブル (新馬戦でも表示される場合があるため維持) ---
     speed_tbl = soup.find("table", id="cpu_speed_sort_table")
     if speed_tbl and speed_tbl.tbody:
         for tr in speed_tbl.tbody.find_all("tr"):
@@ -387,6 +361,7 @@ def parse_keibabook_cpu(html: str) -> dict:
                 "sp_avg": str(avg) if avg else "-"
             }
 
+    # --- ファクターテーブル ---
     factor_tbl = None
     for t in soup.find_all("table"):
         c = t.find("caption")
@@ -402,27 +377,43 @@ def parse_keibabook_cpu(html: str) -> dict:
             if not umaban: continue
             
             tds = tr.find_all("td")
-            if len(tds) < 8: continue
+            # 新馬戦は列が異なる可能性があるが、最低限の長さをチェック
+            if len(tds) < 6: continue
             
             def get_m(idx):
+                if idx >= len(tds): return "-"
                 p = tds[idx].find("p")
                 t = p.get_text(strip=True) if p else ""
                 return t if t else "-"
 
             if umaban not in data: data[umaban] = {}
-            data[umaban].update({
-                "fac_crs": get_m(5), "fac_dis": get_m(6), "fac_zen": get_m(7)
-            })
+
+            if is_shinba:
+                # 新馬戦用カラム取得 (HTMLに基づく)
+                # 0:枠, 1:馬番, 2:CPU, 3:馬名, 4:ダート, 5:出脚, 6:血統, 7:時計, 8:動き
+                data[umaban].update({
+                    "fac_deashi": get_m(5), # 出脚
+                    "fac_kettou": get_m(6), # 血統
+                    "fac_ugoki": get_m(8)   # 動き
+                })
+            else:
+                # 通常レース用カラム取得
+                # 0:枠, 1:馬番, 2:CPU, 3:馬名, 4:ダート, 5:コース, 6:距離, 7:前走, 8:時計...
+                data[umaban].update({
+                    "fac_crs": get_m(5), # コース
+                    "fac_dis": get_m(6), # 距離
+                    "fac_zen": get_m(7)  # 前走
+                })
 
     return data
 
-def fetch_keibabook_cpu_data(driver, race_id: str):
+def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
     url = f"{BASE_URL}/cyuou/cpu/{race_id}"
     driver.get(url)
     try:
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "cpu_speed_sort_table")))
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "main")))
     except: pass
-    return parse_keibabook_cpu(driver.page_source)
+    return parse_keibabook_cpu(driver.page_source, is_shinba)
 
 # ==================================================
 # Netkeiba (騎手・戦績詳細取得)
@@ -589,19 +580,26 @@ def run_all_races(target_races=None):
             status = st.empty()
             status.text("データ収集中...")
 
-            # 1. 厩舎の話
+            # 1. 厩舎の話 (ここでレース名を取得して新馬判定を行う)
             header_info, danwa_data = fetch_keibabook_danwa(driver, race_id)
             if not danwa_data:
                 st.error("馬データが見つかりませんでした (厩舎の話ページ取得失敗)")
                 continue
 
-            # 2. CPU予想
-            cpu_data = fetch_keibabook_cpu_data(driver, race_id)
+            # --- 新馬戦(メイクデビュー)判定 ---
+            race_title = header_info.get('header_text', '')
+            is_shinba = "新馬" in race_title or "メイクデビュー" in race_title
+            
+            if is_shinba:
+                st.caption("🌱 新馬戦(メイクデビュー)モードで解析します")
+
+            # 2. CPU予想 (新馬フラグを渡す)
+            cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
 
             # 3. 前走インタビュー
             interview_data = fetch_zenkoso_interview(driver, race_id)
 
-            # 4. 調教データ 【追加】
+            # 4. 調教データ
             chokyo_data = fetch_keibabook_chokyo(driver, race_id)
 
             # 5. Netkeiba (騎手・戦績)
@@ -609,22 +607,32 @@ def run_all_races(target_races=None):
 
             # --- データ統合 ---
             lines = []
+            # danwa_dataのキー(馬番)でループ
             for umaban in sorted(danwa_data.keys(), key=int):
                 d_info = danwa_data[umaban]
                 c_info = cpu_data.get(umaban, {})
                 i_text = interview_data.get(umaban, "なし")
-                k_info = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"}) # 調教
+                k_info = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"}) 
                 n_info = nk_data.get(umaban, {})
 
                 # 戦績テキスト
                 past_list = n_info.get("past", [])
                 past_str = " / ".join(past_list) if past_list else "情報なし"
                 
-                # 指数テキスト
-                cpu_str = (f"指数(前/2/3/平):{c_info.get('sp_last','-')}/{c_info.get('sp_2','-')}/"
-                           f"{c_info.get('sp_3','-')}/{c_info.get('sp_avg','-')} "
-                           f"F(コ/距/前):{c_info.get('fac_crs','-')}/{c_info.get('fac_dis','-')}/{c_info.get('fac_zen','-')}")
+                # 指数テキスト (共通)
+                sp_str = f"指数(前/2/3/平):{c_info.get('sp_last','-')}/{c_info.get('sp_2','-')}/{c_info.get('sp_3','-')}/{c_info.get('sp_avg','-')}"
                 
+                # --- ファクターテキストの分岐 ---
+                if is_shinba:
+                    # 新馬戦用フォーマット (出脚/血統/動き)
+                    # c_infoから取得できない場合は'-'
+                    fac_str = f"F(出脚/血統/動き):{c_info.get('fac_deashi','-')}/{c_info.get('fac_kettou','-')}/{c_info.get('fac_ugoki','-')}"
+                else:
+                    # 通常レース用フォーマット (コース/距離/前走)
+                    fac_str = f"F(コ/距/前):{c_info.get('fac_crs','-')}/{c_info.get('fac_dis','-')}/{c_info.get('fac_zen','-')}"
+                
+                cpu_str = f"{sp_str} {fac_str}"
+
                 # 調教テキスト
                 chokyo_str = f"短評:{k_info['tanpyo']} / 詳細:{k_info['details']}"
 
@@ -665,5 +673,5 @@ def run_all_races(target_races=None):
         driver.quit()
 
 if __name__ == "__main__":
-    st.title("🏇 競馬AI予想データ生成")
+    st.title("🏇 競馬AI予想データ生成 (新馬対応版)")
     run_all_races()

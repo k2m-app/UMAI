@@ -22,6 +22,10 @@ DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 
+# ★追加：netkeiba
+NETKEIBA_ID = st.secrets.get("NETKEIBA_ID", "")
+NETKEIBA_PASS = st.secrets.get("NETKEIBA_PASS", "")
+
 # デフォルト設定（app.py 側で set_race_params が呼ばれると書き換わる）
 YEAR = "2025"
 KAI = "04"
@@ -35,6 +39,21 @@ PLACE_NAMES = {
     "05": "中山", "06": "福島", "07": "新潟", "08": "札幌", "09": "函館",
 }
 
+# ★追加：競馬ブック PLACEコード → netkeiba 競馬場コード
+# ユーザー提示：
+# 01札幌 02函館 03福島 04新潟 05東京 06中山 07中京 08京都 09阪神 10小倉
+KEIBABOOK_TO_NETKEIBA_PLACE = {
+    "08": "01",  # 札幌
+    "09": "02",  # 函館
+    "06": "03",  # 福島
+    "07": "04",  # 新潟
+    "04": "05",  # 東京
+    "05": "06",  # 中山
+    "02": "07",  # 中京
+    "00": "08",  # 京都
+    "01": "09",  # 阪神
+    "03": "10",  # 小倉
+}
 
 def set_race_params(year, kai, place, day):
     """app.py から開催情報を差し替えるための関数"""
@@ -44,7 +63,6 @@ def set_race_params(year, kai, place, day):
     PLACE = str(place).zfill(2)
     DAY = str(day).zfill(2)
 
-
 def get_current_params():
     """現在のパラメータ（UI表示用）"""
     return YEAR, KAI, PLACE, DAY
@@ -52,14 +70,9 @@ def get_current_params():
 
 # ==================================================
 # ワンクリックコピー（components.html + clipboard）
-# ※ Streamlit環境によって components.html が key 引数を受け付けないため
-#   components.html(..., key=...) は使わない
 # ==================================================
 def render_copy_button(text: str, label: str, dom_id: str):
-    """
-    dom_id をHTML側の id として使い、ページ内でユニークにする。
-    """
-    safe_text = json.dumps(text)  # JS文字列として安全に埋め込む
+    safe_text = json.dumps(text)
     html = f"""
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
       <button id="{dom_id}" style="
@@ -91,7 +104,6 @@ def render_copy_button(text: str, label: str, dom_id: str):
       }})();
     </script>
     """
-    # ★key引数は渡さない（あなたの環境ではエラーになる）
     components.html(html, height=54)
 
 
@@ -104,7 +116,6 @@ def get_supabase_client() -> Client | None:
         return None
     return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-
 def save_history(
     year: str,
     kai: str,
@@ -115,7 +126,6 @@ def save_history(
     race_id: str,
     ai_answer: str,
 ) -> None:
-    """history テーブルに 1 レース分の予想を保存する。"""
     supabase = get_supabase_client()
     if supabase is None:
         return
@@ -173,8 +183,97 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
     time.sleep(1.2)
 
 
+# ★追加：netkeibaログイン（必要なときだけ）
+def login_netkeiba(driver: webdriver.Chrome) -> bool:
+    """
+    成功したら True、失敗/未設定なら False
+    netkeibaのログイン画面は変更される可能性があるので
+    できるだけ「壊れにくい」書き方にしています。
+    """
+    if not NETKEIBA_ID or not NETKEIBA_PASS:
+        return False
+
+    try:
+        # loginページ（netkeibaはここが定番）
+        driver.get("https://regist.netkeiba.com/?pid=stage_login")
+        time.sleep(0.8)
+
+        # 入力欄（nameやidが変わる可能性があるので複数候補）
+        # まずはよくある form 構造を探す
+        id_candidates = [
+            (By.NAME, "login_id"),
+            (By.NAME, "userid"),
+            (By.NAME, "id"),
+            (By.CSS_SELECTOR, "input[type='text']"),
+        ]
+        pass_candidates = [
+            (By.NAME, "pswd"),
+            (By.NAME, "password"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+        ]
+
+        id_el = None
+        for how, sel in id_candidates:
+            try:
+                id_el = WebDriverWait(driver, 5).until(EC.visibility_of_element_located((how, sel)))
+                if id_el:
+                    break
+            except Exception:
+                continue
+
+        pw_el = None
+        for how, sel in pass_candidates:
+            try:
+                pw_el = WebDriverWait(driver, 5).until(EC.visibility_of_element_located((how, sel)))
+                if pw_el:
+                    break
+            except Exception:
+                continue
+
+        if not id_el or not pw_el:
+            return False
+
+        id_el.clear()
+        id_el.send_keys(NETKEIBA_ID)
+        pw_el.clear()
+        pw_el.send_keys(NETKEIBA_PASS)
+
+        # submit
+        # loginボタンも複数候補
+        btn_candidates = [
+            (By.CSS_SELECTOR, "input[type='submit']"),
+            (By.CSS_SELECTOR, "button[type='submit']"),
+            (By.CSS_SELECTOR, ".Btn_Login, .btn_login, .btn"),
+        ]
+        clicked = False
+        for how, sel in btn_candidates:
+            try:
+                btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((how, sel)))
+                btn.click()
+                clicked = True
+                break
+            except Exception:
+                continue
+
+        if not clicked:
+            return False
+
+        time.sleep(1.2)
+
+        # ログイン判定：ログアウトリンクが出る / no_login_show が消える等
+        html = driver.page_source
+        if "ログアウト" in html or "action=logout" in html:
+            return True
+
+        # うまく判定できなくても cookies は入っている可能性があるので True 寄りにしない
+        return False
+
+    except Exception:
+        return False
+
+
 # ==================================================
-# Parser：共通
+# Parser：共通（競馬ブック）
 # ==================================================
 def parse_race_info(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -211,10 +310,6 @@ def parse_race_info(html: str):
 
 
 def parse_danwa_comments(html: str):
-    """
-    厩舎の話を取得。
-    戻り値：{ "1": "コメント", ... }（馬番優先。無理なら馬名キー混在）
-    """
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="danwa")
     if not table or not table.tbody:
@@ -227,21 +322,18 @@ def parse_danwa_comments(html: str):
         uma_td = row.find("td", class_="umaban")
         bamei_td = row.find("td", class_="bamei")
 
-        # 馬番
         if uma_td:
             text = re.sub(r"\D", "", uma_td.get_text(strip=True))
             if text:
                 current_key = text
                 continue
 
-        # 馬名（新馬等の揺れ対策）
         if bamei_td and not current_key:
             text = bamei_td.get_text(strip=True)
             if text:
                 current_key = text
                 continue
 
-        # コメント本体
         danwa_td = row.find("td", class_="danwa")
         if danwa_td and current_key:
             danwa_dict[current_key] = danwa_td.get_text(strip=True)
@@ -251,10 +343,6 @@ def parse_danwa_comments(html: str):
 
 
 def parse_zenkoso_interview(html: str):
-    """
-    前走インタビュー（syoin）を取得。無い場合は {}。
-    戻り値：{ "1": {...}, ... }（馬番キー）
-    """
     soup = BeautifulSoup(html, "html.parser")
     h2 = soup.find("h2", string=lambda s: s and "前走" in s)
     if not h2:
@@ -330,12 +418,6 @@ def parse_zenkoso_interview(html: str):
 
 
 def parse_cyokyo(html: str):
-    """
-    調教データを取得。
-    戻り値：
-      - 馬番キー: { "1": {"tanpyo":"", "detail":"", "bamei_hint":""}, ... }
-      - 馬番が取れない場合：馬名キーで入ることがある（救済用）
-    """
     soup = BeautifulSoup(html, "html.parser")
     cyokyo_dict = {}
 
@@ -386,11 +468,6 @@ def parse_cyokyo(html: str):
 
 
 def parse_syutuba(html: str) -> dict:
-    """
-    確定出馬(出馬表)ページから
-    { "1": {"umaban":"1","bamei":"ケイベエ","kisyu":"木幡巧","kisyu_change":True}, ... }
-    を返す。馬番を主キーにする。
-    """
     soup = BeautifulSoup(html, "html.parser")
 
     table = soup.find("table", class_=lambda c: c and "syutuba_sp" in c.split())
@@ -448,7 +525,95 @@ def parse_syutuba(html: str) -> dict:
 
 
 # ==================================================
-# fetch（Selenium）
+# ★追加：netkeiba タイム指数 parser
+# ==================================================
+def parse_netkeiba_speed_index(html: str) -> dict:
+    """
+    netkeiba speed.html の出馬表から指数を抜く。
+    戻り値：{ "1": {"index1":"83","index2":"65","index3":"83","course":"83","avg5":"81"}, ... }
+    取れない値は "" にする（後で表示側でフォールバック）
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    # 代表的なテーブル class（あなたのHTML通り）
+    table = soup.find("table", class_=lambda c: c and ("SpeedIndex_Table" in c))
+    if not table or not table.tbody:
+        return {}
+
+    out = {}
+
+    for tr in table.tbody.find_all("tr", class_=lambda c: c and ("HorseList" in c.split()), recursive=False):
+        # 馬番
+        um_td = tr.find("td", class_=lambda c: c and "sk__umaban" in c)
+        if not um_td:
+            continue
+        umaban = re.sub(r"\D", "", um_td.get_text(" ", strip=True))
+        if not umaban:
+            continue
+
+        def cell_text(cell_class: str) -> str:
+            td = tr.find("td", class_=lambda c: c and cell_class in c.split())
+            if not td:
+                return ""
+            txt = td.get_text(" ", strip=True)
+            txt = txt.replace("\xa0", " ").strip()
+            # 「未」や「-」もそのまま返す（表示側で使える）
+            return txt
+
+        out[umaban] = {
+            "index1": cell_text("sk__index1"),           # 前走
+            "index2": cell_text("sk__index2"),           # 2走
+            "index3": cell_text("sk__index3"),           # 3走
+            "course": cell_text("sk__max_course_index"), # コース最高
+            "avg5": cell_text("sk__average_index"),      # 5走平均
+        }
+
+    return out
+
+
+def fetch_netkeiba_speed_dict(driver: webdriver.Chrome, netkeiba_race_id: str) -> dict:
+    """
+    netkeiba speed.html を開いて指数辞書を返す
+    """
+    url = f"https://race.netkeiba.com/race/speed.html?race_id={netkeiba_race_id}&type=shutuba&mode=default"
+    driver.get(url)
+
+    # テーブルが出るまで少し待つ（JS依存が薄いが、保険）
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.SpeedIndex_Table"))
+        )
+    except Exception:
+        pass
+
+    html = driver.page_source
+
+    # ログインが必要そうなら、1回だけログインして再取得
+    # （「ログイン」ボタンや no_login_show が出る等の簡易判定）
+    if ("無料会員登録" in html or "ログイン" in html) and NETKEIBA_ID and NETKEIBA_PASS:
+        ok = login_netkeiba(driver)
+        if ok:
+            driver.get(url)
+            time.sleep(0.8)
+            html = driver.page_source
+
+    return parse_netkeiba_speed_index(html)
+
+
+def keibabook_race_id_to_netkeiba_race_id(year: str, kai: str, place: str, day: str, race_num_2: str) -> str:
+    """
+    競馬ブックのパラメータ（YEAR,KAI,PLACE,DAY）から netkeiba race_id を作る。
+    netkeiba race_id = YYYY + (netkeiba場コード2桁) + 回2桁 + 日2桁 + R2桁
+    """
+    nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place)
+    if not nk_place:
+        # 変換できないときは空扱い（呼び出し側でケア）
+        return ""
+    return f"{str(year)}{nk_place}{str(kai).zfill(2)}{str(day).zfill(2)}{str(race_num_2).zfill(2)}"
+
+
+# ==================================================
+# fetch（Selenium）競馬ブック
 # ==================================================
 def fetch_danwa_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/danwa/0/{race_id}"
@@ -457,13 +622,11 @@ def fetch_danwa_dict(driver, race_id: str):
     html = driver.page_source
     return html, parse_race_info(html), parse_danwa_comments(html)
 
-
 def fetch_zenkoso_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/syoin/{race_id}"
     driver.get(url)
     time.sleep(0.8)
     return parse_zenkoso_interview(driver.page_source)
-
 
 def fetch_cyokyo_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
@@ -475,7 +638,6 @@ def fetch_cyokyo_dict(driver, race_id: str):
     except Exception:
         pass
     return parse_cyokyo(driver.page_source)
-
 
 def fetch_syutuba_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/syutuba/{race_id}"
@@ -493,10 +655,6 @@ def fetch_syutuba_dict(driver, race_id: str):
 # 直近開催：複数候補検出
 # ==================================================
 def detect_meet_candidates(driver, max_candidates: int = 12):
-    """
-    Keibabook内ページから syutuba racekey を拾い、
-    開催単位（YYYYKAIPLACEDAY = 10桁）でユニーク化して候補リストを返す。
-    """
     driver.get(f"{BASE_URL}/cyuou/")
     time.sleep(1.0)
     html = driver.page_source
@@ -535,7 +693,6 @@ def detect_meet_candidates(driver, max_candidates: int = 12):
         })
 
     return candidates
-
 
 def auto_detect_meet_candidates():
     driver = build_driver()
@@ -634,15 +791,6 @@ def _find_by_name_key(d: dict, bamei: str):
 # メイン処理（複数レース）
 # ==================================================
 def run_all_races(target_races=None):
-    """
-    target_races: None -> 1~12
-                 list/set -> 指定レース番号だけ実行
-
-    仕様：
-      - レース単位で出力表示
-      - 各レース「ワンクリックコピー」＋txt保存
-      - 最後に「全レースまとめ」をワンクリックコピー＋txt保存＋閲覧用text_area
-    """
     race_numbers = (
         list(range(1, 13))
         if target_races is None
@@ -657,13 +805,26 @@ def run_all_races(target_races=None):
     driver = build_driver()
 
     try:
-        st.info("🔑 ログイン中...")
+        st.info("🔑 ログイン中...（競馬ブック）")
         login_keibabook(driver)
-        st.success("✅ ログイン完了")
+        st.success("✅ 競馬ブック ログイン完了")
+
+        # ★netkeibaは「必要なら」ログイン（失敗しても続行）
+        netkeiba_logged_in = False
+        if NETKEIBA_ID and NETKEIBA_PASS:
+            st.info("🔑 netkeiba ログイン確認中（必要なら）...")
+            netkeiba_logged_in = login_netkeiba(driver)
+            if netkeiba_logged_in:
+                st.success("✅ netkeiba ログイン完了")
+            else:
+                st.warning("⚠️ netkeiba ログインは未確認（指数ページが閲覧可能なら取得できます）")
 
         for r in race_numbers:
             race_num = f"{r:02}"
             race_id = base_id + race_num
+
+            # ★netkeiba race_id
+            netkeiba_race_id = keibabook_race_id_to_netkeiba_race_id(YEAR, KAI, PLACE, DAY, race_num)
 
             st.markdown(f"### {place_name} {r}R")
             status_area = st.empty()
@@ -688,7 +849,16 @@ def run_all_races(target_races=None):
                 if not syutuba_dict:
                     status_area.warning("⚠️ 出馬表が取得できませんでした（全頭保証できない可能性）。")
 
-                # A-4 結合（出馬表ベース）
+                # ★A-4 netkeiba 指数（取れなくても続行）
+                speed_dict = {}
+                if netkeiba_race_id:
+                    try:
+                        speed_dict = fetch_netkeiba_speed_dict(driver, netkeiba_race_id)
+                    except Exception as e:
+                        print("netkeiba fetch error:", e)
+                        speed_dict = {}
+
+                # A-5 結合（出馬表ベース）
                 merged = []
                 umaban_list = (
                     sorted(syutuba_dict.keys(), key=lambda x: int(x))
@@ -753,11 +923,25 @@ def run_all_races(target_races=None):
                     else:
                         cyokyo_block = "  【調教】 （情報なし）\n"
 
+                    # ★指数（netkeiba）
+                    sp = speed_dict.get(umaban, {}) if isinstance(speed_dict, dict) else {}
+                    idx1 = (sp.get("index1") or "").strip()
+                    idx2 = (sp.get("index2") or "").strip()
+                    idx3 = (sp.get("index3") or "").strip()
+                    course = (sp.get("course") or "").strip()
+                    avg5 = (sp.get("avg5") or "").strip()
+
+                    if idx1 or idx2 or idx3 or course or avg5:
+                        speed_line = f"  【指数】 前走{idx1 or '－'}、2走{idx2 or '－'}、3走{idx3 or '－'}、コース最高{course or '－'}、5走平均{avg5 or '－'}\n"
+                    else:
+                        speed_line = "  【指数】 （情報なし）\n"
+
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"
                         f"  【厩舎の話】 {d_comment}\n"
                         f"{prev_block}"
                         f"{cyokyo_block}"
+                        f"{speed_line}"
                     )
                     merged.append(text)
 
@@ -801,9 +985,7 @@ def run_all_races(target_races=None):
                     status_area.success("✅ 分析完了")
                     save_history(YEAR, KAI, PLACE, place_name, DAY, race_num, race_id, full_answer)
 
-                    # レース単位：コピー＆保存
                     with st.expander("📋 このレースの出力をコピー/保存", expanded=False):
-                        # dom_idをユニーク化（再描画対策で時刻も混ぜる）
                         dom_id = f"copy_race_{race_id}_{int(time.time()*1000)}"
                         render_copy_button(
                             text=full_answer.strip(),
@@ -830,7 +1012,6 @@ def run_all_races(target_races=None):
 
             st.write("---")
 
-        # 全レースまとめ：コピー＆保存
         if combined_blocks:
             combined_text = "\n".join(combined_blocks).strip()
             st.session_state["combined_output"] = combined_text

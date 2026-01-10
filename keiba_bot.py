@@ -218,6 +218,88 @@ def fetch_keibabook_danwa(driver, race_id: str):
     return parse_race_info_from_danwa(html), parse_danwa_horses(html)
 
 # ==================================================
+# 競馬ブック：調教 (Chokyo) 【新規追加】
+# ==================================================
+def parse_keibabook_chokyo(html: str) -> dict:
+    soup = BeautifulSoup(html, "html.parser")
+    data = {}
+
+    # 全ての cyokyo テーブルを取得 (各馬ごとにテーブルが分かれている場合と行で分かれている場合がある)
+    # 提供されたHTMLでは、<table class="default cyokyo"> が複数ある、または行で構成されている。
+    # ここではclass="cyokyo"を持つテーブルを探す
+    tables = soup.find_all("table", class_="cyokyo")
+
+    for tbl in tables:
+        # 馬番の取得
+        umaban_td = tbl.find("td", class_="umaban")
+        if not umaban_td:
+            continue
+        umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
+
+        # 短評の取得
+        tanpyo_td = tbl.find("td", class_="tanpyo")
+        tanpyo = _clean_text_ja(tanpyo_td.get_text(strip=True)) if tanpyo_td else "なし"
+
+        # 詳細データの取得
+        # 通常、馬番行の次の行(colspan=5のセル)に詳細が入っている
+        # BeautifulSoupで同じテーブル内の次のtrを探すか、構造的に取得する
+        details_text_parts = []
+        
+        # テーブル内の全DL(日付・場所・強さ)とTable(タイム)を順番に取得
+        detail_cell = tbl.find("td", colspan="5")
+        if detail_cell:
+            for child in detail_cell.children:
+                if child.name == 'dl' and 'dl-table' in child.get('class', []):
+                    # 日付、コース、強さなど (例: (前回) 10/29 栗CW 良 / 一杯に追う)
+                    dt_texts = [c.get_text(strip=True) for c in child.find_all(['dt', 'dd'])]
+                    line = " ".join(dt_texts)
+                    details_text_parts.append(line)
+                
+                elif child.name == 'table' and 'cyokyodata' in child.get('class', []):
+                    # タイムデータ
+                    time_tr = child.find("tr", class_="time")
+                    if time_tr:
+                        times = [td.get_text(strip=True) for td in time_tr.find_all("td")]
+                        details_text_parts.append(" ".join(times))
+                    
+                    # 併せ馬データ
+                    awase_tr = child.find("tr", class_="awase")
+                    if awase_tr:
+                        awase_txt = _clean_text_ja(awase_tr.get_text(strip=True))
+                        details_text_parts.append(awase_txt)
+
+            # 攻め解説の取得
+            semekaisetu_div = detail_cell.find("div", class_="semekaisetu")
+            if semekaisetu_div:
+                kaisetu_p = semekaisetu_div.find("p")
+                if kaisetu_p:
+                    k_text = _clean_text_ja(kaisetu_p.get_text(strip=True))
+                    details_text_parts.append(f"[攻め解説] {k_text}")
+
+        full_detail = " ".join(details_text_parts)
+        full_detail = re.sub(r"\s+", " ", full_detail).strip()
+
+        data[umaban] = {
+            "tanpyo": tanpyo,
+            "details": full_detail
+        }
+    
+    return data
+
+def fetch_keibabook_chokyo(driver, race_id: str):
+    url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
+    driver.get(url)
+    try:
+        # テーブルが表示されるまで待機
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "cyokyo"))
+        )
+    except:
+        pass
+    html = driver.page_source
+    return parse_keibabook_chokyo(html)
+
+# ==================================================
 # 競馬ブック：前走インタビュー (Syoin)
 # ==================================================
 def parse_zenkoso_interview(html: str) -> dict:
@@ -343,8 +425,7 @@ def fetch_keibabook_cpu_data(driver, race_id: str):
     return parse_keibabook_cpu(driver.page_source)
 
 # ==================================================
-# 【修正】Netkeiba (騎手・戦績詳細取得)
-# 修正箇所: 通過順と着順の厳密抽出
+# Netkeiba (騎手・戦績詳細取得)
 # ==================================================
 def _parse_netkeiba_past_td(td) -> str:
     """netkeibaの過去走セル（td.Past）を解析して文字列化"""
@@ -362,9 +443,8 @@ def _parse_netkeiba_past_td(td) -> str:
     data03 = td.find("div", class_="Data03")
     jockey_weight = _clean_text_ja(data03.get_text(" ", strip=True)) if data03 else ""
     
-    # 【修正】着順取得 (span.Num 優先)
+    # 着順
     rank = "?"
-    # ユーザー指摘の <span class="Num"> を最優先
     rank_tag = td.find("span", class_="Num")
     if not rank_tag:
         rank_tag = td.find("div", class_="Rank") or td.find("span", class_="Rank") or td.find("span", class_="Order")
@@ -376,31 +456,22 @@ def _parse_netkeiba_past_td(td) -> str:
     data05 = td.find("div", class_="Data05")
     time_dist = _clean_text_ja(data05.get_text(" ", strip=True)) if data05 else ""
 
-    # 【修正】通過順取得 (Data06 から 1-1-1-1 形式を抽出)
+    # 通過順
     passing = ""
     data06 = td.find("div", class_="Data06")
     if data06:
-        # 例: "1-1-1-1 (36.4) 514(-12)"
         raw_d6 = _clean_text_ja(data06.get_text(strip=True))
-        # 通過順らしきパターン (数字-数字...) を正規表現で抽出
-        # \d{1,2}(?:-\d{1,2})* : 数字1~2桁 + (ハイフン+数字)の繰り返し
         match = re.search(r"(\d{1,2}(?:-\d{1,2})+)", raw_d6)
         if match:
             passing = match.group(1)
-        # 短距離などで「1」のみの場合のケアが必要なら変更するが、
-        # 通常のnetkeiba馬柱はハイフン区切りが多い。1つだけなら match しない。
-        # もし「1」だけでも取りたい場合は r"(\d{1,2}(?:-\d{1,2})*)" にする
         if not passing:
-             # ハイフンがない場合でも先頭の数字だけ取る（例: "1" だけでペース表示など）
              match_single = re.match(r"^(\d{1,2})\s", raw_d6)
              if match_single:
                  passing = match_single.group(1)
 
-    # 情報が少なすぎる(未出走など)場合はハイフン
     if len(date_place) < 2:
         return "-"
     
-    # ユーザー要望形式: 1-1-1-1 → 9着
     if passing:
         rank_display = f"{passing}→{rank}着"
     else:
@@ -426,7 +497,6 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
     
     rows = soup.find_all("tr", class_="HorseList")
     for tr in rows:
-        # 馬番
         waku_tds = tr.find_all("td", class_="Waku")
         umaban = ""
         for td in waku_tds:
@@ -436,7 +506,6 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
                 break
         if not umaban: continue
 
-        # 騎手名取得 (aタグ優先)
         jockey_td = tr.find("td", class_="Jockey")
         jockey = "不明"
         if jockey_td:
@@ -449,10 +518,9 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
                 jockey = jockey_td.get_text(strip=True)
             jockey = _clean_text_ja(jockey)
 
-        # 過去走
         past_tds = tr.find_all("td", class_="Past")
         past_list = []
-        for td in past_tds[:3]: # 最新3走
+        for td in past_tds[:3]: 
             if "Rest" in td.get("class", []):
                 past_list.append("(放牧/休養)")
             else:
@@ -533,7 +601,10 @@ def run_all_races(target_races=None):
             # 3. 前走インタビュー
             interview_data = fetch_zenkoso_interview(driver, race_id)
 
-            # 4. Netkeiba (騎手・戦績)
+            # 4. 調教データ 【追加】
+            chokyo_data = fetch_keibabook_chokyo(driver, race_id)
+
+            # 5. Netkeiba (騎手・戦績)
             nk_data = fetch_netkeiba_data(driver, YEAR, KAI, PLACE, DAY, race_num_str)
 
             # --- データ統合 ---
@@ -542,6 +613,7 @@ def run_all_races(target_races=None):
                 d_info = danwa_data[umaban]
                 c_info = cpu_data.get(umaban, {})
                 i_text = interview_data.get(umaban, "なし")
+                k_info = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"}) # 調教
                 n_info = nk_data.get(umaban, {})
 
                 # 戦績テキスト
@@ -552,11 +624,15 @@ def run_all_races(target_races=None):
                 cpu_str = (f"指数(前/2/3/平):{c_info.get('sp_last','-')}/{c_info.get('sp_2','-')}/"
                            f"{c_info.get('sp_3','-')}/{c_info.get('sp_avg','-')} "
                            f"F(コ/距/前):{c_info.get('fac_crs','-')}/{c_info.get('fac_dis','-')}/{c_info.get('fac_zen','-')}")
+                
+                # 調教テキスト
+                chokyo_str = f"短評:{k_info['tanpyo']} / 詳細:{k_info['details']}"
 
                 line = (
                     f"▼馬番{umaban} {d_info['name']} (騎手:{n_info.get('jockey','-')})\n"
                     f"【厩舎の話】{d_info['danwa']}\n"
                     f"【前走インタビュー】{i_text}\n"
+                    f"【調教】{chokyo_str}\n"
                     f"【データ】{cpu_str}\n"
                     f"【近走】{past_str}\n"
                 )

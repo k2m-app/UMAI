@@ -10,7 +10,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
-from supabase import create_client, Client
 
 # ==================================================
 # 【設定エリア】secretsから読み込み
@@ -18,9 +17,6 @@ from supabase import create_client, Client
 KEIBA_ID = st.secrets.get("KEIBA_ID", "")
 KEIBA_PASS = st.secrets.get("KEIBA_PASS", "")
 DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
-
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
-SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 
 # デフォルト設定
 YEAR = "2026"
@@ -109,36 +105,6 @@ def render_copy_button(text: str, label: str, dom_id: str):
 
 
 # ==================================================
-# Supabase
-# ==================================================
-@st.cache_resource
-def get_supabase_client() -> Client | None:
-    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        return None
-    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-
-
-def save_history(year, kai, place_code, place_name, day, race_num, race_id, ai_answer):
-    supabase = get_supabase_client()
-    if supabase is None:
-        return
-    data = {
-        "year": str(year),
-        "kai": str(kai),
-        "place_code": str(place_code),
-        "place_name": place_name,
-        "day": str(day),
-        "race_num": race_num,
-        "race_id": race_id,
-        "output_text": ai_answer,
-    }
-    try:
-        supabase.table("history").insert(data).execute()
-    except Exception as e:
-        print("Supabase insert error:", e)
-
-
-# ==================================================
 # Selenium / Login
 # ==================================================
 def build_driver() -> webdriver.Chrome:
@@ -160,7 +126,7 @@ def build_driver() -> webdriver.Chrome:
 
 def login_keibabook(driver: webdriver.Chrome) -> None:
     if not KEIBA_ID or not KEIBA_PASS:
-        raise RuntimeError("KEIBA_ID / KEIBA_PASS が未設定")
+        raise RuntimeError("KEIBA_ID / KEIBA_PASS が未設定です（st.secrets）")
     driver.get(f"{BASE_URL}/login/login")
     WebDriverWait(driver, 15).until(
         EC.visibility_of_element_located((By.NAME, "login_id"))
@@ -171,21 +137,37 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
     WebDriverWait(driver, 15).until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))
     ).click()
-    time.sleep(1.2)
+    time.sleep(1.0)
 
 
 # ==================================================
-# Parser: 競馬ブック 基本情報/厩舎コメント
+# Utility
 # ==================================================
-def parse_race_info(html: str):
+def _clean_text_ja(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace("\u3000", " ")  # 全角スペース
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _is_missing_marker(s: str) -> bool:
+    t = _clean_text_ja(s)
+    return t in {"－", "-", "—", "―", "‐", ""}
+
+
+# ==================================================
+# 競馬ブック：厩舎の話（danwa）→ レース情報 + 馬番/馬名/厩舎コメント
+#  HTML構造を積極利用して確実に抽出
+# ==================================================
+def parse_race_info_from_danwa(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     racetitle = soup.find("div", class_="racetitle")
     if not racetitle:
         return {"date_meet": "", "race_name": "", "cond1": "", "course_line": ""}
 
     racemei = racetitle.find("div", class_="racemei")
-    date_meet = ""
-    race_name = ""
+    date_meet, race_name = "", ""
     if racemei:
         ps = racemei.find_all("p")
         if len(ps) >= 1:
@@ -194,52 +176,168 @@ def parse_race_info(html: str):
             race_name = ps[1].get_text(strip=True)
 
     racetitle_sub = racetitle.find("div", class_="racetitle_sub")
-    cond1 = ""
-    course_line = ""
+    cond1, course_line = "", ""
     if racetitle_sub:
         sub_ps = racetitle_sub.find_all("p")
         if len(sub_ps) >= 1:
             cond1 = sub_ps[0].get_text(strip=True)
         if len(sub_ps) >= 2:
-            course_line = sub_ps[1].get_text(" ", strip=True)
+            course_line = racetitle_sub.find_all("p")[1].get_text(" ", strip=True)
 
     return {
-        "date_meet": date_meet,
-        "race_name": race_name,
-        "cond1": cond1,
-        "course_line": course_line,
+        "date_meet": _clean_text_ja(date_meet),
+        "race_name": _clean_text_ja(race_name),
+        "cond1": _clean_text_ja(cond1),
+        "course_line": _clean_text_ja(course_line),
     }
 
 
-def parse_danwa_comments(html: str):
+def parse_danwa_horses(html: str) -> dict:
+    """
+    返り値:
+      {
+        "1": {"name":"ラフレードピエル", "danwa":"○ラフレードピエル..."},
+        ...
+      }
+    """
     soup = BeautifulSoup(html, "html.parser")
-    table = soup.find("table", class_="danwa")
+
+    # まずテーブルを特定（class="default danwa" 想定）
+    table = soup.find("table", class_=lambda c: c and "danwa" in str(c))
     if not table or not table.tbody:
         return {}
-    danwa_dict = {}
-    current_key = None
-    for row in table.tbody.find_all("tr"):
-        uma_td = row.find("td", class_="umaban")
-        bamei_td = row.find("td", class_="bamei")
-        if uma_td:
-            text = re.sub(r"\D", "", uma_td.get_text(strip=True))
-            if text:
-                current_key = text
-                continue
-        if bamei_td and not current_key:
-            text = bamei_td.get_text(strip=True)
-            if text:
-                current_key = text
-                continue
-        danwa_td = row.find("td", class_="danwa")
-        if danwa_td and current_key:
-            danwa_dict[current_key] = danwa_td.get_text(strip=True)
-            current_key = None
-    return danwa_dict
+
+    horses = {}
+    current_umaban = None
+
+    # danwaは「馬行」→「コメント行」→ spacer の繰り返しが多い
+    rows = table.tbody.find_all("tr", recursive=False)
+    if not rows:
+        rows = table.tbody.find_all("tr")
+
+    for tr in rows:
+        if "spacer" in (tr.get("class") or []):
+            continue
+
+        # 馬行：td.umaban + td.left(馬名リンク)
+        umaban_td = tr.find("td", class_="umaban")
+        bamei_td = tr.find("td", class_=lambda c: c and "left" in str(c))
+        if umaban_td and bamei_td:
+            umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
+            a = bamei_td.find("a")
+            name = a.get_text(strip=True) if a else bamei_td.get_text(strip=True)
+            name = _clean_text_ja(name)
+            if umaban:
+                current_umaban = umaban
+                horses[current_umaban] = {"name": name, "danwa": ""}
+            continue
+
+        # コメント行：td.danwa
+        danwa_td = tr.find("td", class_="danwa")
+        if danwa_td and current_umaban:
+            p = danwa_td.find("p")
+            txt = p.get_text("\n", strip=True) if p else danwa_td.get_text("\n", strip=True)
+            txt = _clean_text_ja(txt)
+            horses[current_umaban]["danwa"] = txt if txt else "(情報なし)"
+            current_umaban = None
+            continue
+
+    return horses
+
+
+def fetch_keibabook_danwa(driver, race_id: str):
+    url = f"{BASE_URL}/cyuou/danwa/0/{race_id}"
+    driver.get(url)
+    try:
+        WebDriverWait(driver, 12).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.default.danwa"))
+        )
+    except Exception:
+        pass
+
+    html = driver.page_source
+    race_info = parse_race_info_from_danwa(html)
+    horses = parse_danwa_horses(html)
+    return race_info, horses
 
 
 # ==================================================
-# 競馬ブック CPU予想
+# 競馬ブック：前走インタビュー（syoin）
+# 提示されたHTML構造を前提に、以下を厳密に定義
+# - td.syoin 内にある「div.syoindata」はメタ情報（前走レース）→コメント抽出対象外
+# - コメントは div.syoindata の外にある <p> のみ
+# - <p>－</p> は「インタビューなし」
+# ==================================================
+def parse_zenkoso_interview(html: str) -> dict:
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", class_=lambda c: c and "syoin" in str(c))
+    if not table or not table.tbody:
+        return {}
+
+    interview = {}
+    current_umaban = None
+
+    rows = table.tbody.find_all("tr", recursive=False)
+    if not rows:
+        rows = table.tbody.find_all("tr")
+
+    for tr in rows:
+        if "spacer" in (tr.get("class") or []):
+            continue
+
+        # 馬行：td.umaban + td.left.bamei
+        umaban_td = tr.find("td", class_="umaban")
+        bamei_td = tr.find("td", class_=lambda c: c and "bamei" in str(c))
+        if umaban_td and bamei_td:
+            u = re.sub(r"\D", "", umaban_td.get_text(strip=True))
+            current_umaban = u if u else None
+            continue
+
+        # コメント行：td.syoin
+        syoin_td = tr.find("td", class_="syoin")
+        if syoin_td and current_umaban:
+            # コメント候補は「div.syoindata の外」にある <p> のみ
+            candidates = []
+            for p in syoin_td.find_all("p"):
+                # syoindata内のp（前走日付等）を除外
+                if p.find_parent("div", class_="syoindata") is not None:
+                    continue
+                t = _clean_text_ja(p.get_text(" ", strip=True))
+                candidates.append(t)
+
+            # 有効なコメントのみ採用（－は無視）
+            chosen = ""
+            for t in candidates:
+                if _is_missing_marker(t):
+                    continue
+                # コメントらしさ最低ライン（短いゴミ除去）
+                if len(t) < 8:
+                    continue
+                chosen = t
+                break
+
+            if chosen:
+                interview[current_umaban] = chosen
+
+            current_umaban = None
+
+    return interview
+
+
+def fetch_zenkoso_interview(driver, race_id: str):
+    url = f"{BASE_URL}/cyuou/syoin/{race_id}"
+    driver.get(url)
+    try:
+        WebDriverWait(driver, 12).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.default.syoin"))
+        )
+    except Exception:
+        pass
+    return parse_zenkoso_interview(driver.page_source)
+
+
+# ==================================================
+# 競馬ブック：CPU予想（指数/ファクター）
 # ==================================================
 def parse_keibabook_cpu(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
@@ -268,7 +366,7 @@ def parse_keibabook_cpu(html: str) -> dict:
                 if not txt:
                     return 0
                 v = int(txt)
-                # 「未」や「-」が1000表記になるケース対策：1000は無扱い
+                # 「未」や「-」が 1000 表記になるケース → 無扱い
                 if v == 1000:
                     return 0
                 return v
@@ -290,7 +388,7 @@ def parse_keibabook_cpu(html: str) -> dict:
                 }
             )
 
-    # ファクター
+    # ファクター（captionに「ファクター」）
     factor_table = None
     for tbl in soup.find_all("table"):
         cap = tbl.find("caption")
@@ -344,67 +442,7 @@ def fetch_keibabook_cpu_data(driver, race_id: str):
 
 
 # ==================================================
-# 競馬ブック 前走インタビュー (syoin) ※「－」は無視
-# ==================================================
-def parse_zenkoso_interview(html: str) -> dict:
-    """
-    期待する構造:
-    <table class="default syoin">
-      <tr> ... <td class="umaban">1</td> ... </tr>
-      <tr><td class="syoin" colspan="3"> ... <p>コメント</p> </td></tr>
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    table = soup.find("table", class_=lambda c: c and "syoin" in c)
-    if not table or not table.tbody:
-        return {}
-
-    interview_dict = {}
-    rows = table.tbody.find_all("tr", recursive=False)
-
-    current_umaban = None
-    for row in rows:
-        umaban_td = row.find("td", class_="umaban")
-        if umaban_td:
-            u = re.sub(r"\D", "", umaban_td.get_text(strip=True))
-            current_umaban = u if u else None
-            continue
-
-        syoin_td = row.find("td", class_="syoin")
-        if syoin_td and current_umaban:
-            ps = syoin_td.find_all("p")
-            comment = ""
-            for p in ps:
-                txt = p.get_text(strip=True)
-                txt = txt.replace("\u3000", " ").strip()
-                # 「－」は無視（ユーザー要望）
-                if txt in {"－", "-", "—", "―"}:
-                    continue
-                if len(txt) >= 5:
-                    comment = txt
-                    break
-
-            if comment:
-                interview_dict[current_umaban] = comment
-
-            current_umaban = None
-
-    return interview_dict
-
-
-def fetch_zenkoso_interview(driver, race_id: str):
-    url = f"{BASE_URL}/cyuou/syoin/{race_id}"
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table.syoin"))
-        )
-    except Exception:
-        pass
-    return parse_zenkoso_interview(driver.page_source)
-
-
-# ==================================================
-# netkeiba（出馬表：現在騎手 + 過去走を同時に取得）
+# netkeiba（出馬表：現在騎手 + 過去走）
 # ==================================================
 def keibabook_race_id_to_netkeiba_race_id(year, kai, place, day, race_num_2):
     nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place)
@@ -519,7 +557,6 @@ def parse_netkeiba_shutuba_past(html: str, take_last_n: int = 3) -> dict:
         # 馬番
         waku_tds = tr.find_all("td", class_=lambda c: c and "Waku" in str(c))
         umaban = ""
-        # classが ["Waku"] のtdが馬番のことが多い
         for td in waku_tds:
             if td.get("class") == ["Waku"]:
                 umaban = re.sub(r"\D", "", td.get_text(strip=True))
@@ -529,14 +566,13 @@ def parse_netkeiba_shutuba_past(html: str, take_last_n: int = 3) -> dict:
         if not umaban:
             continue
 
-        # ★現在の騎手：ユーザー指定どおり td.Jockey の a の中身を使う
+        # 現在の騎手（td.Jockey a）
         jockey = ""
         jockey_td = tr.find("td", class_=lambda c: c and "Jockey" in str(c))
         if jockey_td:
             a = jockey_td.find("a")
             if a:
                 jockey = a.get_text(strip=True)
-
         jockey = _clean_jockey_name(jockey)
 
         # 過去走
@@ -561,7 +597,7 @@ def fetch_netkeiba_shutuba_past(driver, netkeiba_race_id: str) -> dict:
     )
     driver.get(url)
     try:
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 12).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table.Shutuba_Past5_Table"))
         )
     except Exception:
@@ -610,14 +646,15 @@ def stream_dify_workflow(full_text: str):
             except Exception:
                 continue
 
+            # workflow_finished の outputs がある場合
             event = data.get("event")
             if event == "workflow_finished":
                 outputs = data.get("data", {}).get("outputs", {})
-                if outputs:
-                    for _, value in outputs.items():
-                        if isinstance(value, str):
-                            yield value + "\n"
+                for _, value in outputs.items():
+                    if isinstance(value, str) and value:
+                        yield value + "\n"
 
+            # streaming answer
             chunk = data.get("answer", "")
             if chunk:
                 yield chunk
@@ -628,6 +665,9 @@ def stream_dify_workflow(full_text: str):
 
 # ==================================================
 # メイン処理 (run_all_races)
+# 訪れるページ:
+# - keibabook: 厩舎の話(danwa) / 前走インタビュー(syoin) / CPU予想(cpu)
+# - netkeiba: 馬柱(shutuba_past)
 # ==================================================
 def run_all_races(target_races=None):
     race_numbers = (
@@ -661,20 +701,16 @@ def run_all_races(target_races=None):
             try:
                 status_area.info(f"📡 {place_name}{r}R のデータを収集中...")
 
-                # 1) 競馬ブック：厩舎コメント＋レース情報
-                race_info, danwa_dict = {}, {}
-                try:
-                    driver.get(f"{BASE_URL}/cyuou/danwa/0/{race_id}")
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.CLASS_NAME, "danwa"))
-                    )
-                    html_danwa = driver.page_source
-                    race_info = parse_race_info(html_danwa)
-                    danwa_dict = parse_danwa_comments(html_danwa)
-                except Exception:
-                    pass
+                # 1) 厩舎の話：レース情報 + 馬名 + 厩舎コメント（ここを主キーにする）
+                status_area.info("🗣️ 競馬ブック 厩舎の話（レース情報/馬名/コメント）取得中...")
+                race_info, danwa_horses = fetch_keibabook_danwa(driver, race_id)
 
-                # 2) 競馬ブック：CPU（指数/ファクター）
+                if not danwa_horses:
+                    status_area.error("厩舎の話から馬データを取得できませんでした（table.danwa未検出）")
+                    st.write("---")
+                    continue
+
+                # 2) CPU（指数/ファクター）
                 cpu_dict = {}
                 try:
                     status_area.info("📊 競馬ブック 指数・ファクター取得中...")
@@ -682,7 +718,7 @@ def run_all_races(target_races=None):
                 except Exception as e:
                     print(f"CPU fetch error: {e}")
 
-                # 3) 競馬ブック：前走インタビュー（※「－」は無視）
+                # 3) 前走インタビュー（コメントがあるものだけ）
                 zenkoso_dict = {}
                 try:
                     status_area.info("🎤 前走インタビュー取得中...")
@@ -690,7 +726,7 @@ def run_all_races(target_races=None):
                 except Exception as e:
                     print(f"Zenkoso fetch error: {e}")
 
-                # 4) netkeiba：現在騎手 + 過去走（同ページから）
+                # 4) netkeiba：現在騎手 + 過去走
                 nk_dict = {}
                 if netkeiba_race_id:
                     try:
@@ -700,37 +736,25 @@ def run_all_races(target_races=None):
                         print(f"Netkeiba fetch error: {e}")
 
                 # ---------
-                # 結合（馬番は netkeiba を優先して並べる）
+                # 結合（馬番順：厩舎の話に出ている馬番を正）
                 # ---------
-                umaban_list = sorted(nk_dict.keys(), key=lambda x: int(x)) if nk_dict else []
-                if not umaban_list:
-                    # netkeibaが取れなければ、競馬ブック側のキーで回す（保険）
-                    all_keys = set(danwa_dict.keys()) | set(cpu_dict.keys()) | set(zenkoso_dict.keys())
-                    umaban_list = sorted(list(all_keys), key=lambda x: int(x) if str(x).isdigit() else 999)
+                umaban_list = sorted(danwa_horses.keys(), key=lambda x: int(x))
 
                 merged = []
                 for umaban in umaban_list:
-                    # 馬名：競馬ブック側からは取りに行かない方針もできるが、
-                    # 今回は最低限、danwa側キーは馬番なので馬名が欠ける可能性がある。
-                    # 馬名が必要なら別途netkeibaのHorseName列も取るのがベスト（必要なら追加する）。
-                    bamei = "名称不明"
+                    bamei = (danwa_horses.get(umaban, {}) or {}).get("name") or "名称不明"
+                    kyusha_comment = (danwa_horses.get(umaban, {}) or {}).get("danwa") or "(情報なし)"
 
-                    # 厩舎コメント
-                    comment = danwa_dict.get(umaban, "(情報なし)")
-
-                    # 騎手：★必ず netkeiba td.Jockey a を使う
-                    kisyu = ""
-                    if umaban in nk_dict:
-                        kisyu = nk_dict[umaban].get("jockey", "")
+                    # 騎手：netkeiba 優先
+                    kisyu = (nk_dict.get(umaban, {}) or {}).get("jockey", "") if nk_dict else ""
                     kisyu = kisyu if kisyu else "不明"
 
-                    # 指数・ファクター
-                    cpu = cpu_dict.get(umaban, {})
+                    # 指数・ファクター（CPU）
+                    cpu = cpu_dict.get(umaban, {}) if cpu_dict else {}
                     sp_last = cpu.get("speed_last", "無")
                     sp_2ago = cpu.get("speed_2ago", "無")
                     sp_3ago = cpu.get("speed_3ago", "無")
                     sp_avg = cpu.get("speed_avg", "無")
-
                     fac_crs = cpu.get("factor_course", "無")
                     fac_dis = cpu.get("factor_dist", "無")
                     fac_zen = cpu.get("factor_zenso", "無")
@@ -740,33 +764,33 @@ def run_all_races(target_races=None):
                         f"（3走平均:{sp_avg}）【ファクター】 コース：{fac_crs} 距離：{fac_dis} 前走：{fac_zen}\n"
                     )
 
-                    # 前走インタビュー（コメントがあるときだけ）
+                    # 前走インタビュー（<p>－</p> は入ってこない設計）
                     zenkoso_line = ""
-                    if umaban in zenkoso_dict:
+                    if zenkoso_dict and umaban in zenkoso_dict:
                         zenkoso_line = f"  【前走インタビュー】 {zenkoso_dict[umaban]}\n"
 
                     # 戦績（netkeiba）
-                    p_info = nk_dict.get(umaban, {}).get("past3", ["", "", ""])
+                    if nk_dict and umaban in nk_dict:
+                        p_info = nk_dict[umaban].get("past3", ["", "", ""])
+                    else:
+                        p_info = ["", "", ""]
                     labels = ["前走", "2走前", "3走前"]
                     recs = []
                     for lab, rec in zip(labels, p_info):
                         if rec:
                             recs.append(f"{lab}:{rec}")
-                    if recs:
-                        senreki_line = "  【戦績】 " + " ".join(recs) + "\n"
-                    else:
-                        senreki_line = "  【戦績】 (情報なし)\n"
+                    senreki_line = "  【戦績】 " + (" ".join(recs) if recs else "(情報なし)") + "\n"
 
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"
-                        f"  【厩舎の話】 {comment}\n"
+                        f"  【厩舎の話】 {kyusha_comment}\n"
                         f"{zenkoso_line}"
                         f"{index_line}"
                         f"{senreki_line}"
                     )
                     merged.append(text)
 
-                # AI送信テキスト作成
+                # AI送信テキスト作成（レース情報は厩舎の話ページから）
                 header_txt = (
                     f"{race_info.get('date_meet','')}\n"
                     f"{race_info.get('race_name','')}\n"
@@ -789,7 +813,6 @@ def run_all_races(target_races=None):
 
                 if full_answer:
                     status_area.success("✅ 完了")
-                    save_history(YEAR, KAI, PLACE, place_name, DAY, race_num, race_id, full_answer)
                     combined_blocks.append(f"【{place_name} {r}R】\n{full_answer.strip()}\n")
                     render_copy_button(full_answer.strip(), f"📋 {place_name}{r}R コピー", f"copy_{race_id}")
                 else:

@@ -1,6 +1,7 @@
 import time
 import json
 import re
+import math
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
@@ -10,7 +11,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
-import math
 
 # ==================================================
 # 【設定エリア】secretsから読み込み
@@ -104,84 +104,65 @@ def render_copy_button(text: str, label: str, dom_id: str):
     """
     components.html(html, height=54)
 
-def _to_int_safe(v, default=0):
+def _safe_int(s, default=0) -> int:
     try:
-        return int(str(v).strip())
+        if s is None:
+            return default
+        if isinstance(s, (int, float)):
+            return int(s)
+        ss = str(s).strip()
+        if ss in {"", "-", "－"}:
+            return default
+        return int(ss)
     except:
         return default
 
-def _to_float_safe(v, default=0.0):
-    try:
-        return float(str(v).strip())
-    except:
-        return default
-
-# ==================================================
-# ★追加：スピード指数（最高×4 + 平均）/ 5 → レース内偏差値(0-100)
-# ==================================================
-def compute_race_speed_scores(cpu_data: dict) -> dict:
+def compute_speed_deviation(cpu_data: dict) -> dict:
     """
-    cpu_data[umaban] の sp_last/sp_2/sp_3/sp_avg を使い、
-    raw_speed = (max3*4 + avg) / 5 を作る。
-    その raw_speed をレース内で偏差値化し、0-100にクリップした speed_dev を付与して返す。
+    CPU指数(前/2/3/平) をもとに、
+    スピード基礎値 =（最高値×3 ＋ 前走 ＋ 平均）÷5 を作り、
+    同レース内で偏差値化（0〜100）する。
+
+    cpu_data[umaban] に sp_last, sp_2, sp_3 が入っている前提
+    return: {umaban: 0〜100 の偏差値(float, 小数1桁)}
     """
-    raw_map = {}
+    raw_scores = {}
 
-    for umaban, info in cpu_data.items():
-        last = _to_int_safe(info.get("sp_last", 0), 0)
-        two  = _to_int_safe(info.get("sp_2", 0), 0)
-        thr  = _to_int_safe(info.get("sp_3", 0), 0)
+    for umaban, d in cpu_data.items():
+        last = _safe_int(d.get("sp_last"), 0)
+        two  = _safe_int(d.get("sp_2"), 0)
+        thr  = _safe_int(d.get("sp_3"), 0)
 
-        # '-'などは parse段階で '-' になってるので int化で0になる想定。
-        vals = [x for x in [last, two, thr] if x > 0]
+        vals = [v for v in [last, two, thr] if v > 0]
         if not vals:
             continue
 
-        max3 = max(vals)
+        avg = sum(vals) / len(vals)
+        max_v = max(vals)
 
-        # 平均は sp_avg を優先（あなたの現仕様を踏襲）
-        avg = _to_int_safe(info.get("sp_avg", 0), 0)
-        if avg <= 0:
-            # 念のため：avgがないときは3走から平均を作る
-            avg = round(sum(vals) / len(vals))
+        # ★今回の指定式
+        raw = (max_v * 3 + last + avg) / 5.0
+        raw_scores[umaban] = raw
 
-        raw_speed = (max3 * 4.0 + float(avg)) / 5.0
-        raw_map[umaban] = raw_speed
+    if not raw_scores:
+        return {}
 
-    if not raw_map:
-        # 全頭欠損の場合は何もしない
-        return cpu_data
+    values = list(raw_scores.values())
+    mean = sum(values) / len(values)
+    std = math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
 
-    speeds = list(raw_map.values())
-    mean = sum(speeds) / len(speeds)
-
-    # 標準偏差（母標準偏差でOK。ここは相対化が目的）
-    var = sum((x - mean) ** 2 for x in speeds) / len(speeds)
-    std = math.sqrt(var)
-
-    for umaban, info in cpu_data.items():
-        if umaban not in raw_map:
-            # 欠損は '-' 扱い
-            info["raw_speed"] = "-"
-            info["speed_dev"] = "-"
-            continue
-
-        rs = raw_map[umaban]
-        if std <= 1e-9:
+    result = {}
+    for umaban, raw in raw_scores.items():
+        if std == 0:
             dev = 50.0
         else:
-            dev = 50.0 + 10.0 * (rs - mean) / std
+            dev = 50.0 + 10.0 * (raw - mean) / std
 
-        # 100点満点（0-100にクリップ）
-        if dev < 0:
-            dev = 0.0
-        elif dev > 100:
-            dev = 100.0
+        # 0〜100にクリップ + 小数1桁
+        dev = max(0.0, min(100.0, round(dev, 1)))
+        result[umaban] = dev
 
-        info["raw_speed"] = f"{rs:.1f}"
-        info["speed_dev"] = f"{dev:.1f}"
-
-    return cpu_data
+    return result
 
 # ==================================================
 # Selenium Setup
@@ -321,12 +302,12 @@ def parse_keibabook_chokyo(html: str) -> dict:
         detail_cell = tbl.find("td", colspan="5")
         if detail_cell:
             for child in detail_cell.children:
-                if child.name == 'dl' and 'dl-table' in child.get('class', []):
-                    dt_texts = [c.get_text(strip=True) for c in child.find_all(['dt', 'dd'])]
+                if child.name == "dl" and "dl-table" in child.get("class", []):
+                    dt_texts = [c.get_text(strip=True) for c in child.find_all(["dt", "dd"])]
                     line = " ".join(dt_texts)
                     details_text_parts.append(line)
 
-                elif child.name == 'table' and 'cyokyodata' in child.get('class', []):
+                elif child.name == "table" and "cyokyodata" in child.get("class", []):
                     time_tr = child.find("tr", class_="time")
                     if time_tr:
                         times = [td.get_text(strip=True) for td in time_tr.find_all("td")]
@@ -347,10 +328,7 @@ def parse_keibabook_chokyo(html: str) -> dict:
         full_detail = " ".join(details_text_parts)
         full_detail = re.sub(r"\s+", " ", full_detail).strip()
 
-        data[umaban] = {
-            "tanpyo": tanpyo,
-            "details": full_detail
-        }
+        data[umaban] = {"tanpyo": tanpyo, "details": full_detail}
 
     return data
 
@@ -455,7 +433,7 @@ def parse_keibabook_cpu(html: str, is_shinba: bool = False) -> dict:
                 "sp_last": str(last) if last else "-",
                 "sp_2": str(two) if two else "-",
                 "sp_3": str(thr) if thr else "-",
-                "sp_avg": str(avg) if avg else "-"
+                "sp_avg": str(avg) if avg else "-",
             }
 
     # --- ファクターテーブル ---
@@ -490,17 +468,21 @@ def parse_keibabook_cpu(html: str, is_shinba: bool = False) -> dict:
                 data[umaban] = {}
 
             if is_shinba:
-                data[umaban].update({
-                    "fac_deashi": get_m(5),
-                    "fac_kettou": get_m(6),
-                    "fac_ugoki": get_m(8)
-                })
+                data[umaban].update(
+                    {
+                        "fac_deashi": get_m(5),
+                        "fac_kettou": get_m(6),
+                        "fac_ugoki": get_m(8),
+                    }
+                )
             else:
-                data[umaban].update({
-                    "fac_crs": get_m(5),
-                    "fac_dis": get_m(6),
-                    "fac_zen": get_m(7)
-                })
+                data[umaban].update(
+                    {
+                        "fac_crs": get_m(5),
+                        "fac_dis": get_m(6),
+                        "fac_zen": get_m(7),
+                    }
+                )
 
     return data
 
@@ -508,9 +490,7 @@ def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
     url = f"{BASE_URL}/cyuou/cpu/{race_id}"
     driver.get(url)
     try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "main"))
-        )
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "main")))
     except:
         pass
     return parse_keibabook_cpu(driver.page_source, is_shinba)
@@ -536,7 +516,6 @@ def _parse_netkeiba_past_td(td) -> str:
     rank_tag = td.find("span", class_="Num")
     if not rank_tag:
         rank_tag = td.find("div", class_="Rank") or td.find("span", class_="Rank") or td.find("span", class_="Order")
-
     if rank_tag:
         rank = _clean_text_ja(rank_tag.get_text(strip=True))
 
@@ -558,11 +537,7 @@ def _parse_netkeiba_past_td(td) -> str:
     if len(date_place) < 2:
         return "-"
 
-    if passing:
-        rank_display = f"{passing}→{rank}着"
-    else:
-        rank_display = f"{rank}着"
-
+    rank_display = f"{passing}→{rank}着" if passing else f"{rank}着"
     return f"[{date_place} {race_name} {jockey_weight} {time_dist} ({rank_display})]"
 
 def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
@@ -575,9 +550,7 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
 
     driver.get(url)
     try:
-        WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "Shutuba_Past5_Table"))
-        )
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "Shutuba_Past5_Table")))
     except:
         return {}
 
@@ -603,8 +576,9 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
             if a_tag:
                 jockey = a_tag.get_text(strip=True)
             else:
-                if jockey_td.find("span", class_="Barei"):
-                    jockey_td.find("span", class_="Barei").decompose()
+                barei = jockey_td.find("span", class_="Barei")
+                if barei:
+                    barei.decompose()
                 jockey = jockey_td.get_text(strip=True)
             jockey = _clean_text_ja(jockey)
 
@@ -614,8 +588,7 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
             if "Rest" in td.get("class", []):
                 past_list.append("(放牧/休養)")
             else:
-                p_text = _parse_netkeiba_past_td(td)
-                past_list.append(p_text)
+                past_list.append(_parse_netkeiba_past_td(td))
 
         data[umaban] = {"jockey": jockey, "past": past_list}
 
@@ -637,12 +610,7 @@ def stream_dify_workflow(full_text: str):
     headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
 
     try:
-        res = requests.post(
-            "https://api.dify.ai/v1/workflows/run",
-            headers=headers,
-            json=payload,
-            stream=True
-        )
+        res = requests.post("https://api.dify.ai/v1/workflows/run", headers=headers, json=payload, stream=True, timeout=90)
         for line in res.iter_lines():
             if not line:
                 continue
@@ -693,17 +661,17 @@ def run_all_races(target_races=None):
                 st.error("馬データが見つかりませんでした (厩舎の話ページ取得失敗)")
                 continue
 
-            # --- 新馬戦(メイクデビュー)判定 ---
+            # --- 新馬戦判定 ---
             race_title = header_info.get("header_text", "")
-            is_shinba = "新馬" in race_title or "メイクデビュー" in race_title
+            is_shinba = ("新馬" in race_title) or ("メイクデビュー" in race_title)
             if is_shinba:
                 st.caption("🌱 新馬戦(メイクデビュー)モードで解析します")
 
-            # 2. CPU予想 (新馬フラグを渡す)
+            # 2. CPU予想
             cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
 
-            # ★追加：スピード指数の新算出＆レース内偏差値（0-100）
-            cpu_data = compute_race_speed_scores(cpu_data)
+            # ★追加：スピード偏差値（0〜100）を算出
+            speed_dev = compute_speed_deviation(cpu_data)
 
             # 3. 前走インタビュー
             interview_data = fetch_zenkoso_interview(driver, race_id)
@@ -727,36 +695,20 @@ def run_all_races(target_races=None):
                 past_list = n_info.get("past", [])
                 past_str = " / ".join(past_list) if past_list else "情報なし"
 
-                # 指数テキスト（元の形式は維持）
+                # 指数テキスト（元の前/2/3/平は保持 + スピード偏差値を付与）
+                spd = speed_dev.get(umaban, "-")
                 sp_str = (
-                    f"指数(前/2/3/平):{c_info.get('sp_last','-')}/"
-                    f"{c_info.get('sp_2','-')}/"
-                    f"{c_info.get('sp_3','-')}/"
-                    f"{c_info.get('sp_avg','-')}"
+                    f"指数(前/2/3/平):{c_info.get('sp_last','-')}/{c_info.get('sp_2','-')}/{c_info.get('sp_3','-')}/{c_info.get('sp_avg','-')} "
+                    f"スピード偏差値:{spd}"
                 )
 
-                # ★追加：新スピード指数とレース内スピード偏差値（0-100）
-                # raw_speed = (max3*4 + avg) / 5
-                new_speed_str = (
-                    f"スピード指数(最高×4+平均)/5:{c_info.get('raw_speed','-')} "
-                    f"スピ偏差値(レース内0-100):{c_info.get('speed_dev','-')}"
-                )
-
-                # --- ファクターテキストの分岐 ---
+                # ファクターテキスト分岐
                 if is_shinba:
-                    fac_str = (
-                        f"F(出脚/血統/動き):{c_info.get('fac_deashi','-')}/"
-                        f"{c_info.get('fac_kettou','-')}/"
-                        f"{c_info.get('fac_ugoki','-')}"
-                    )
+                    fac_str = f"F(出脚/血統/動き):{c_info.get('fac_deashi','-')}/{c_info.get('fac_kettou','-')}/{c_info.get('fac_ugoki','-')}"
                 else:
-                    fac_str = (
-                        f"F(コ/距/前):{c_info.get('fac_crs','-')}/"
-                        f"{c_info.get('fac_dis','-')}/"
-                        f"{c_info.get('fac_zen','-')}"
-                    )
+                    fac_str = f"F(コ/距/前):{c_info.get('fac_crs','-')}/{c_info.get('fac_dis','-')}/{c_info.get('fac_zen','-')}"
 
-                cpu_str = f"{sp_str} {new_speed_str} {fac_str}"
+                cpu_str = f"{sp_str} {fac_str}"
 
                 # 調教テキスト
                 chokyo_str = f"短評:{k_info['tanpyo']} / 詳細:{k_info['details']}"
@@ -765,14 +717,14 @@ def run_all_races(target_races=None):
                     f"▼馬番{umaban} {d_info['name']} (騎手:{n_info.get('jockey','-')})\n"
                     f"【厩舎の話】{d_info['danwa']}\n"
                     f"【前走インタビュー】{i_text}\n"
-                    f"【調教】{chokyo_str}\n"
-                    f"【データ】{cpu_str}\n"
                     f"【近走】{past_str}\n"
+                    f"【データ】{cpu_str}\n"
+                    f"【調教】{chokyo_str}\n"
                 )
                 lines.append(line)
 
             full_prompt = (
-                f"■レース情報\n{header_info['header_text']}\n\n"
+                f"■レース情報\n{header_info.get('header_text','')}\n\n"
                 f"■各馬詳細\n" + "\n".join(lines)
             )
 
@@ -798,5 +750,5 @@ def run_all_races(target_races=None):
         driver.quit()
 
 if __name__ == "__main__":
-    st.title("🏇 競馬AI予想データ生成 (新馬対応版・スピード相対化)")
+    st.title("🏇 競馬AI予想データ生成")
     run_all_races()

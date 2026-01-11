@@ -777,26 +777,23 @@ def stream_dify_workflow(full_text: str):
 
 
 # ==================================================
-# Main Execution (Batch)
+# Main Execution (Batch) - メモリ対策版
 # ==================================================
 def run_batch_prediction(jobs_config):
     """
-    複数場の設定を受け取り、ブラウザを一度立ち上げたら連続で処理する
-    jobs_config = [
-        {"year": "2026", "kai": "01", "place": "05", "day": "04", "races": [1,2...], "place_name": "中山"},
-        ...
-    ]
+    メモリ対策: 開催場ごとにドライバを再起動する
     """
-    driver = build_driver()
     full_output_log = ""
     
-    try:
-        st.info(f"ログイン中... (ID: {KEIBA_ID[:2]}**)")
-        login_keibabook(driver)
-        st.success("ログイン成功。連続実行を開始します。")
-
-        # ジョブ（開催場）ループ
-        for job_idx, job in enumerate(jobs_config):
+    # ジョブ（開催場）ループ
+    for job_idx, job in enumerate(jobs_config):
+        # ★ここで毎回ドライバを新規作成（メモリリセット）
+        driver = build_driver()
+        
+        try:
+            st.info(f"[{job_idx+1}/{len(jobs_config)}] ログイン処理中... (メモリリセット完了)")
+            login_keibabook(driver)
+            
             year = job["year"]
             kai = str(job["kai"]).zfill(2)
             place = str(job["place"]).zfill(2)
@@ -884,12 +881,13 @@ def run_batch_prediction(jobs_config):
                 render_copy_button(ai_output, f"{place_name}{r}R コピー", f"copy_{job_idx}_{r}")
                 status.success("完了")
             
-            # 1開催終了ごとの区切り
             st.success(f"✅ {place_name}開催分の処理が完了しました")
-            
-    except Exception as e:
-        st.error(f"予期せぬエラーが発生しました: {e}")
-    finally:
-        driver.quit()
+
+        except Exception as e:
+            st.error(f"エラー発生 ({place_name}): {e}")
         
+        finally:
+            # ★開催場ごとの処理が終わったら必ずドライバを破棄（メモリ解放）
+            driver.quit()
+            
     return full_output_log

@@ -184,7 +184,7 @@ def _safe_int(s, default=0) -> int:
 
 
 # ==================================================
-# スピード指数（基礎値→偏差値→25点満点変換）
+# スピード指数（基礎値→偏差値→30点満点変換）
 # ==================================================
 def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.2, w_avg: float = 1.8) -> dict:
     """
@@ -193,7 +193,7 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
         umaban: {
             "raw": float,      # 基礎値
             "hensachi": float, # 偏差値(50±10)
-            "score": float     # 25点満点スコア
+            "score": float     # 30点満点スコア
         }
     }
     """
@@ -227,23 +227,27 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
             hensachi = 50.0 + 10.0 * (raw - mean) / std
         hensachi_scores[umaban] = hensachi
 
-    # 最高偏差値を25点に正規化
+    # 最高偏差値を30点に正規化
     if not hensachi_scores:
         return {}
     
     max_hensachi = max(hensachi_scores.values())
-    min_hensachi = min(hensachi_scores.values())
     
     out = {}
     for umaban, raw in raw_scores.items():
         hensachi = hensachi_scores[umaban]
         
-        # 最高偏差値を25点に、最低偏差値を適切にスケーリング
-        if max_hensachi == min_hensachi:
-            score = 25.0
+        # 最高偏差値を30点に、最低偏差値を適切にスケーリング
+        if max_hensachi == 0: # 念のためのゼロ除算回避
+             score = 0.0
+        elif max_hensachi == min(hensachi_scores.values()): # 全員同じ値の場合
+            score = 30.0
         else:
-            # 最高偏差値=25点として線形変換
-            score = 25.0 * (hensachi / max_hensachi)
+            # 最高偏差値=30点として線形変換
+            # ※元のロジックに従い、単純比率で計算
+            score = 30.0 * (hensachi / max_hensachi)
+            # もし負の値が出る可能性がある場合は0丸めなどを入れますが、
+            # 偏差値比率なので基本的にはそのまま計算します
         
         out[umaban] = {
             "raw": round(raw, 2),
@@ -954,16 +958,16 @@ def run_all_races(target_races=None):
                 past_list = n_info.get("past", [])
                 past_str = " / ".join(past_list) if past_list else "情報なし"
 
-                # スピード指数(25点満点)
+               # スピード指数(30点満点)
                 sm = speed_metrics.get(umaban, {})
-                sp_score = sm.get("score", "-")  # 25点満点
+                sp_score = sm.get("score", "-")  # 30点満点
                 sp_hensachi = sm.get("hensachi", "-")  # 偏差値
                 sp_raw = sm.get("raw", "-")  # 基礎値
 
                 sp_str = (
                     f"指数(前/2/3/平):{c_info.get('sp_last','-')}/{c_info.get('sp_2','-')}/"
                     f"{c_info.get('sp_3','-')}/{c_info.get('sp_avg','-')} "
-                    f"スピード指数:{sp_score}/25点 (偏差値:{sp_hensachi} 基礎値:{sp_raw})"
+                    f"スピード指数:{sp_score}/30点 (偏差値:{sp_hensachi} 基礎値:{sp_raw})"
                 )
 
                 # 馬場バイアス評価(10点満点) - race_titleを渡す

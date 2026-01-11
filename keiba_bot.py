@@ -186,8 +186,7 @@ def _safe_int(s, default=0) -> int:
 # ==================================================
 # スピード指数（基礎値→偏差値→30点満点変換）
 # ==================================================
-def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.2, w_avg: float = 1.8) -> dict:
-    """
+def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.8, w_avg: float = 1.2) -> dict:    """
     出力:
     {
         umaban: {

@@ -55,10 +55,10 @@ KEIBABOOK_TO_NETKEIBA_PLACE = {
 }
 
 # ==================================================
-# 馬場バイアス評価データ
+# 馬場バイアス評価データ（完全版）
 # ==================================================
 BABA_BIAS_DATA = {
-    # +5点(絶好枠)
+    # ========== +5点(絶好枠) ==========
     "中山ダート1200": {5: [6, 7, 8]},
     "中京ダート1400": {5: [6, 7, 8]},
     "京都ダート1200": {5: [6, 7, 8]},
@@ -68,51 +68,43 @@ BABA_BIAS_DATA = {
     "阪神芝1200": {5: [1, 2, 3]},
     "函館芝1800": {5: [1, 2, 3]},
     "東京芝2000": {5: [5]},
-    "新潟芝1000": {5: [7, 8]},
+    "新潟芝1000": {5: [7, 8], 3: [6]},
     "東京ダート1600": {5: [6, 8], 3: [7]},
     "東京芝1600": {5: [6, 8]},
     "札幌ダート1000": {5: [7, 8]},
-    "阪神ダート1400": {5: [8]},
+    "阪神ダート1400": {5: [8], 3: [4, 6], 2: [4, 6]},
     "東京芝1400": {5: [8]},
     "京都芝1600内": {5: [6]},
-    "中山ダート1800": {5: [7, 8]},
-    "中山芝2500": {5: [5]},
-    "中京芝1200": {5: [2, 3], 3: [1]},
+    "中山ダート1800": {5: [7, 8], 2: [4, 5]},
+    "中山芝2500": {5: [5], 3: [6, 8]},
+    "中京芝1200": {5: [2, 3], 3: [1], 2: [4, 5]},
     "京都ダート1800": {5: [6]},
     "京都ダート1900": {5: [3]},
     "京都芝1200": {5: [7]},
     "京都芝2400": {5: [2, 4]},
-    "小倉芝1200": {5: [7]},
-    "新潟ダート1200": {5: [6, 7]},
+    "小倉芝1200": {5: [7], 3: [8], 2: [6]},
+    "新潟ダート1200": {5: [6, 7], 2: [4, 8]},
     "新潟芝1600": {5: [5, 7]},
-    "東京ダート1400": {5: [6, 7]},
+    "東京ダート1400": {5: [6, 7], 3: [4, 8]},
     "阪神ダート1800": {5: [6, 7]},
-    # +3点(好枠)
-    "阪神ダート1200": {3: [5, 6, 7]},
+    
+    # ========== +3点(好枠)主体 ==========
+    "阪神ダート1200": {5: [8], 3: [5, 6, 7]},
     "中京ダート1200": {3: [1, 6]},
-    "中山芝1600": {3: [2, 3, 4], 5: [1]},
-    "中京芝1400": {3: [1, 4], 5: [3]},
-    "東京ダート1400": {3: [4, 8]},
-    "新潟芝1000": {3: [6]},
-    "中山芝2500": {3: [6, 8]},
-    "小倉芝1200": {3: [8]},
+    "中山芝1600": {5: [1], 3: [2, 3, 4]},
+    "中京芝1400": {5: [3], 3: [1, 4]},
     "東京芝2400": {3: [1, 3]},
-    "阪神芝1800": {3: [2, 4], 5: [1, 3]},
-    "函館芝2000": {3: [1, 5], 5: [2]},
-    "札幌芝2000": {3: [2, 3], 5: [1, 5]},
-    # +2点(期待値プラス)
-    "中山ダート1200": {2: [5]},
-    "中山ダート1800": {2: [4, 5]},
-    "中京ダート1400": {2: [3, 5]},
-    "東京芝2000": {2: [1]},
-    "東京ダート1600": {2: [5]},
-    "阪神ダート1400": {2: [4, 6]},
-    "阪神ダート1200": {2: [4]},
-    "小倉芝1200": {2: [6]},
-    "新潟ダート1200": {2: [4, 8]},
-    "札幌芝1200": {2: [6, 7], 3: [1, 8]},
-    "函館芝2000": {2: [4, 6]},
-    "中京芝1200": {2: [4, 5]},
+    "阪神芝1800": {5: [1, 3], 3: [2, 4]},
+    "函館芝2000": {5: [2], 3: [1, 5], 2: [4, 6]},
+    "札幌芝2000": {5: [1, 5], 3: [2, 3]},
+    
+    # ========== +2点(期待値プラス)主体 ==========
+    "中山ダート1200": {5: [6, 7, 8], 2: [5]},
+    "中京ダート1400": {5: [6, 7, 8], 2: [3, 5]},
+    "東京芝2000": {5: [5], 2: [1]},
+    "東京ダート1600": {5: [6, 8], 3: [7], 2: [5]},
+    "阪神ダート1200": {5: [8], 3: [5, 6, 7], 2: [4]},
+    "札幌芝1200": {3: [1, 8], 2: [6, 7]},
 }
 
 
@@ -263,69 +255,131 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
 
 
 # ==================================================
-# 馬場バイアス評価関数
+# 馬場バイアス評価関数（完全版）
 # ==================================================
-def calculate_baba_bias(waku: int, race_title: str, race_day: int, track_type: str) -> dict:
+def extract_race_info(race_title: str) -> dict:
     """
-    馬場バイアス評価を計算
+    レース情報テキストから競馬場、距離、芝/ダート、開催日を抽出
+    
+    入力例: "2026年1月11日 1回中山4日目\n12R ４歳以上２勝クラス\n[指定],定量\n1200m (ダート・右)"
+    
+    Returns:
+        {
+            "place": "中山",
+            "distance": "1200",
+            "track_type": "dirt" or "turf",
+            "day": 4,
+            "course_variant": "" or "内" (京都芝1600内などの識別用)
+        }
+    """
+    result = {
+        "place": None,
+        "distance": None,
+        "track_type": None,
+        "day": None,
+        "course_variant": ""
+    }
+    
+    # 競馬場名と開催日の抽出（1回中山4日目 のパターン）
+    place_day_pattern = r'(\d+)回([^0-9]+?)(\d+)日目'
+    place_day_match = re.search(place_day_pattern, race_title)
+    if place_day_match:
+        result["place"] = place_day_match.group(2).strip()
+        result["day"] = int(place_day_match.group(3))
+    
+    # 距離の抽出（1200m のパターン）
+    distance_pattern = r'(\d{3,4})m'
+    distance_match = re.search(distance_pattern, race_title)
+    if distance_match:
+        result["distance"] = distance_match.group(1)
+    
+    # 芝/ダートの判定
+    if 'ダート' in race_title:
+        result["track_type"] = "dirt"
+    elif '芝' in race_title:
+        result["track_type"] = "turf"
+    
+    # コース種別（内回り・外回り）の判定
+    if '内' in race_title:
+        result["course_variant"] = "内"
+    elif '外' in race_title:
+        result["course_variant"] = "外"
+    
+    return result
+
+
+def calculate_baba_bias(waku: int, race_title: str) -> dict:
+    """
+    馬場バイアス評価を計算（完全版）
     
     Args:
         waku: 枠番(1-8)
-        race_title: レース名(距離情報含む)
-        race_day: 開催日(1,2,3...)
-        track_type: 'turf' or 'dirt'
+        race_title: レース情報全文
     
     Returns:
         {
             "kaisai_bias": int,  # 開催週バイアス(0-5)
             "course_bias": int,  # コースバイアス(0-5)
-            "total": int         # 合計(0-10)
+            "total": int,        # 合計(0-10)
+            "debug": str         # デバッグ情報
         }
     """
     kaisai_bias = 0
     course_bias = 0
+    debug_info = []
+    
+    # レース情報抽出
+    race_info = extract_race_info(race_title)
+    
+    place_name = race_info["place"]
+    distance = race_info["distance"]
+    track_type = race_info["track_type"]
+    race_day = race_info["day"]
+    course_variant = race_info["course_variant"]
+    
+    debug_info.append(f"場所:{place_name} 距離:{distance}m 種別:{track_type} {race_day}日目")
     
     # 開催週バイアス(芝のレースで開催1-2日目のみ)
     if track_type == "turf" and race_day in [1, 2]:
         if waku == 1:
             kaisai_bias = 5
+            debug_info.append("開催週バイアス:1枠+5点")
         elif waku == 2:
             kaisai_bias = 3
+            debug_info.append("開催週バイアス:2枠+3点")
         elif waku == 3:
             kaisai_bias = 2
+            debug_info.append("開催週バイアス:3枠+2点")
     
     # コースバイアス評価
-    # レース名から競馬場と距離を抽出
-    place_name = None
-    for code, name in PLACE_NAMES.items():
-        if name in race_title:
-            place_name = name
-            break
-    
-    # 距離抽出
-    distance_match = re.search(r'(\d+)m', race_title)
-    distance = distance_match.group(1) if distance_match else None
-    
-    # 芝/ダート判定
-    track_str = "芝" if track_type == "turf" else "ダート"
-    
-    # バイアスデータ検索
-    if place_name and distance:
-        course_key = f"{place_name}{track_str}{distance}"
+    if place_name and distance and track_type:
+        # 芝/ダート文字列作成
+        track_str = "芝" if track_type == "turf" else "ダート"
+        
+        # コースキー作成（内回り・外回りも考慮）
+        course_key = f"{place_name}{track_str}{distance}{course_variant}"
+        
+        debug_info.append(f"検索キー:{course_key}")
         
         if course_key in BABA_BIAS_DATA:
             bias_data = BABA_BIAS_DATA[course_key]
+            debug_info.append(f"バイアスデータ発見")
             
-            # 各点数帯をチェック
-            for points, waku_list in bias_data.items():
-                if waku in waku_list:
+            # 点数の高い順にチェック（5→3→2）
+            # 重複を避けるため、一度マッチしたら終了
+            for points in [5, 3, 2]:
+                if points in bias_data and waku in bias_data[points]:
                     course_bias = points
+                    debug_info.append(f"コースバイアス:{waku}枠+{points}点")
                     break
+        else:
+            debug_info.append("該当コースなし")
     
     return {
         "kaisai_bias": kaisai_bias,
         "course_bias": course_bias,
-        "total": kaisai_bias + course_bias
+        "total": kaisai_bias + course_bias,
+        "debug": " | ".join(debug_info)
     }
 
 
@@ -860,17 +914,13 @@ def run_all_races(target_races=None):
                 st.error("馬データが見つかりませんでした (厩舎の話ページ取得失敗)")
                 continue
 
-            # --- 新馬戦判定 ---
+            # --- レース情報取得 ---
             race_title = header_info.get("header_text", "")
+            
+            # 新馬戦判定
             is_shinba = ("新馬" in race_title) or ("メイクデビュー" in race_title)
             if is_shinba:
                 st.caption("🌱 新馬戦(メイクデビュー)モードで解析します")
-
-            # 芝/ダート判定
-            track_type = "turf" if "芝" in race_title else "dirt"
-            
-            # 開催日判定(DAYから)
-            race_day = int(DAY)
 
             # 2. CPU予想
             cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
@@ -898,6 +948,7 @@ def run_all_races(target_races=None):
 
                 # 枠番・馬番
                 waku = d_info.get("waku", "?")
+                waku_int = int(waku) if waku.isdigit() else 0
                 
                 # 戦績テキスト
                 past_list = n_info.get("past", [])
@@ -915,12 +966,15 @@ def run_all_races(target_races=None):
                     f"スピード指数:{sp_score}/25点 (偏差値:{sp_hensachi} 基礎値:{sp_raw})"
                 )
 
-                # 馬場バイアス評価(10点満点)
-                baba_bias = calculate_baba_bias(int(waku), race_title, race_day, track_type)
+                # 馬場バイアス評価(10点満点) - race_titleを渡す
+                baba_bias = calculate_baba_bias(waku_int, race_title)
                 bias_str = (
                     f"馬場バイアス:{baba_bias['total']}/10点 "
                     f"(開催週:{baba_bias['kaisai_bias']}/5 コース:{baba_bias['course_bias']}/5)"
                 )
+                
+                # デバッグ情報を表示（問題診断時に有効化）
+                # st.caption(f"🔍 {umaban}番: {baba_bias['debug']}")
 
                 # ファクターテキスト分岐
                 if is_shinba:
@@ -950,7 +1004,7 @@ def run_all_races(target_races=None):
                 lines.append(line)
 
             full_prompt = (
-                f"■レース情報\n{header_info.get('header_text','')}\n\n"
+                f"■レース情報\n{race_title}\n\n"
                 f"■各馬詳細\n" + "\n".join(lines)
             )
 

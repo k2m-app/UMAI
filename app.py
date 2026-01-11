@@ -5,7 +5,7 @@ import keiba_bot
 # App config
 # ==================================================
 st.set_page_config(
-    page_title="JRA予想：UMAI (Multi)",
+    page_title="UMAI",
     layout="wide",
     initial_sidebar_state="expanded",
 )

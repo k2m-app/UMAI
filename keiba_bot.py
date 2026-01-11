@@ -10,6 +10,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
+import math
 
 # ==================================================
 # 【設定エリア】secretsから読み込み
@@ -38,7 +39,7 @@ KEIBABOOK_TO_NETKEIBA_PLACE = {
 }
 
 # ==================================================
-# パラメータ設定・取得関数 (ここを復活・修正)
+# パラメータ設定・取得関数
 # ==================================================
 def set_race_params(year, kai, place, day):
     """UIから開催パラメータを設定するための関数"""
@@ -103,6 +104,85 @@ def render_copy_button(text: str, label: str, dom_id: str):
     """
     components.html(html, height=54)
 
+def _to_int_safe(v, default=0):
+    try:
+        return int(str(v).strip())
+    except:
+        return default
+
+def _to_float_safe(v, default=0.0):
+    try:
+        return float(str(v).strip())
+    except:
+        return default
+
+# ==================================================
+# ★追加：スピード指数（最高×4 + 平均）/ 5 → レース内偏差値(0-100)
+# ==================================================
+def compute_race_speed_scores(cpu_data: dict) -> dict:
+    """
+    cpu_data[umaban] の sp_last/sp_2/sp_3/sp_avg を使い、
+    raw_speed = (max3*4 + avg) / 5 を作る。
+    その raw_speed をレース内で偏差値化し、0-100にクリップした speed_dev を付与して返す。
+    """
+    raw_map = {}
+
+    for umaban, info in cpu_data.items():
+        last = _to_int_safe(info.get("sp_last", 0), 0)
+        two  = _to_int_safe(info.get("sp_2", 0), 0)
+        thr  = _to_int_safe(info.get("sp_3", 0), 0)
+
+        # '-'などは parse段階で '-' になってるので int化で0になる想定。
+        vals = [x for x in [last, two, thr] if x > 0]
+        if not vals:
+            continue
+
+        max3 = max(vals)
+
+        # 平均は sp_avg を優先（あなたの現仕様を踏襲）
+        avg = _to_int_safe(info.get("sp_avg", 0), 0)
+        if avg <= 0:
+            # 念のため：avgがないときは3走から平均を作る
+            avg = round(sum(vals) / len(vals))
+
+        raw_speed = (max3 * 4.0 + float(avg)) / 5.0
+        raw_map[umaban] = raw_speed
+
+    if not raw_map:
+        # 全頭欠損の場合は何もしない
+        return cpu_data
+
+    speeds = list(raw_map.values())
+    mean = sum(speeds) / len(speeds)
+
+    # 標準偏差（母標準偏差でOK。ここは相対化が目的）
+    var = sum((x - mean) ** 2 for x in speeds) / len(speeds)
+    std = math.sqrt(var)
+
+    for umaban, info in cpu_data.items():
+        if umaban not in raw_map:
+            # 欠損は '-' 扱い
+            info["raw_speed"] = "-"
+            info["speed_dev"] = "-"
+            continue
+
+        rs = raw_map[umaban]
+        if std <= 1e-9:
+            dev = 50.0
+        else:
+            dev = 50.0 + 10.0 * (rs - mean) / std
+
+        # 100点満点（0-100にクリップ）
+        if dev < 0:
+            dev = 0.0
+        elif dev > 100:
+            dev = 100.0
+
+        info["raw_speed"] = f"{rs:.1f}"
+        info["speed_dev"] = f"{dev:.1f}"
+
+    return cpu_data
+
 # ==================================================
 # Selenium Setup
 # ==================================================
@@ -124,7 +204,7 @@ def build_driver() -> webdriver.Chrome:
 
 def login_keibabook(driver: webdriver.Chrome) -> None:
     if not KEIBA_ID or not KEIBA_PASS:
-        return 
+        return
     driver.get(f"{BASE_URL}/login/login")
     try:
         WebDriverWait(driver, 5).until(
@@ -159,7 +239,7 @@ def parse_race_info_from_danwa(html: str) -> dict:
     if racetitle_sub:
         for p in racetitle_sub.find_all("p"):
             header_parts.append(p.get_text(strip=True))
-    
+
     return {"header_text": "\n".join(header_parts)}
 
 def parse_danwa_horses(html: str) -> dict:
@@ -170,7 +250,7 @@ def parse_danwa_horses(html: str) -> dict:
 
     horses = {}
     current_umaban = None
-    
+
     rows = table.tbody.find_all("tr", recursive=False)
     for tr in rows:
         classes = tr.get("class", [])
@@ -178,18 +258,18 @@ def parse_danwa_horses(html: str) -> dict:
             continue
 
         umaban_td = tr.find("td", class_="umaban")
-        bamei_td = tr.find("td", class_="left") 
+        bamei_td = tr.find("td", class_="left")
 
         if umaban_td and bamei_td:
             raw_umaban = umaban_td.get_text(strip=True)
             current_umaban = re.sub(r"\D", "", raw_umaban)
-            
+
             anchor = bamei_td.find("a")
             if anchor:
                 raw_name = anchor.get_text(strip=True)
             else:
                 raw_name = bamei_td.get_text(strip=True)
-            
+
             clean_name = _clean_text_ja(raw_name)
             if current_umaban:
                 horses[current_umaban] = {"name": clean_name, "danwa": ""}
@@ -199,8 +279,8 @@ def parse_danwa_horses(html: str) -> dict:
         if danwa_td and current_umaban:
             comment_text = danwa_td.get_text("\n", strip=True)
             comment_text = _clean_text_ja(comment_text)
-            
-            if horses[current_umaban]["danwa"]: 
+
+            if horses[current_umaban]["danwa"]:
                 horses[current_umaban]["danwa"] += (" " + comment_text)
             else:
                 horses[current_umaban]["danwa"] = comment_text
@@ -245,13 +325,13 @@ def parse_keibabook_chokyo(html: str) -> dict:
                     dt_texts = [c.get_text(strip=True) for c in child.find_all(['dt', 'dd'])]
                     line = " ".join(dt_texts)
                     details_text_parts.append(line)
-                
+
                 elif child.name == 'table' and 'cyokyodata' in child.get('class', []):
                     time_tr = child.find("tr", class_="time")
                     if time_tr:
                         times = [td.get_text(strip=True) for td in time_tr.find_all("td")]
                         details_text_parts.append(" ".join(times))
-                    
+
                     awase_tr = child.find("tr", class_="awase")
                     if awase_tr:
                         awase_txt = _clean_text_ja(awase_tr.get_text(strip=True))
@@ -271,7 +351,7 @@ def parse_keibabook_chokyo(html: str) -> dict:
             "tanpyo": tanpyo,
             "details": full_detail
         }
-    
+
     return data
 
 def fetch_keibabook_chokyo(driver, race_id: str):
@@ -298,7 +378,7 @@ def parse_zenkoso_interview(html: str) -> dict:
     interview_data = {}
     current_umaban = None
     rows = table.tbody.find_all("tr", recursive=False)
-    
+
     for tr in rows:
         classes = tr.get("class", [])
         if "spacer" in classes:
@@ -321,7 +401,7 @@ def parse_zenkoso_interview(html: str) -> dict:
 
             if not _is_missing_marker(clean_text) and len(clean_text) > 1:
                 interview_data[current_umaban] = clean_text
-            
+
             current_umaban = None
 
     return interview_data
@@ -349,25 +429,28 @@ def parse_keibabook_cpu(html: str, is_shinba: bool = False) -> dict:
     if speed_tbl and speed_tbl.tbody:
         for tr in speed_tbl.tbody.find_all("tr"):
             umaban_td = tr.find("td", class_="umaban")
-            if not umaban_td: continue
+            if not umaban_td:
+                continue
             umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
-            if not umaban: continue
-            
+            if not umaban:
+                continue
+
             tds = tr.find_all("td")
-            if len(tds) < 8: continue
-            
+            if len(tds) < 8:
+                continue
+
             def get_v(idx):
                 p = tds[idx].find("p")
                 txt = re.sub(r"\D", "", p.get_text(strip=True)) if p else ""
                 val = int(txt) if txt else 0
-                return val if val < 900 else 0 
+                return val if val < 900 else 0
 
             last = get_v(-1)
             two = get_v(-2)
             thr = get_v(-3)
             vals = [x for x in [last, two, thr] if x > 0]
-            avg = round(sum(vals)/len(vals)) if vals else 0
-            
+            avg = round(sum(vals) / len(vals)) if vals else 0
+
             data[umaban] = {
                 "sp_last": str(last) if last else "-",
                 "sp_2": str(two) if two else "-",
@@ -382,41 +465,41 @@ def parse_keibabook_cpu(html: str, is_shinba: bool = False) -> dict:
         if c and "ファクター" in c.get_text():
             factor_tbl = t
             break
-            
+
     if factor_tbl and factor_tbl.tbody:
         for tr in factor_tbl.tbody.find_all("tr"):
             umaban_td = tr.find("td", class_="umaban")
-            if not umaban_td: continue
+            if not umaban_td:
+                continue
             umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
-            if not umaban: continue
-            
+            if not umaban:
+                continue
+
             tds = tr.find_all("td")
-            # 新馬戦は列が異なる可能性があるが、最低限の長さをチェック
-            if len(tds) < 6: continue
-            
+            if len(tds) < 6:
+                continue
+
             def get_m(idx):
-                if idx >= len(tds): return "-"
+                if idx >= len(tds):
+                    return "-"
                 p = tds[idx].find("p")
                 t = p.get_text(strip=True) if p else ""
                 return t if t else "-"
 
-            if umaban not in data: data[umaban] = {}
+            if umaban not in data:
+                data[umaban] = {}
 
             if is_shinba:
-                # 新馬戦用カラム取得 (HTMLに基づく)
-                # 0:枠, 1:馬番, 2:CPU, 3:馬名, 4:ダート, 5:出脚, 6:血統, 7:時計, 8:動き
                 data[umaban].update({
-                    "fac_deashi": get_m(5), # 出脚
-                    "fac_kettou": get_m(6), # 血統
-                    "fac_ugoki": get_m(8)   # 動き
+                    "fac_deashi": get_m(5),
+                    "fac_kettou": get_m(6),
+                    "fac_ugoki": get_m(8)
                 })
             else:
-                # 通常レース用カラム取得
-                # 0:枠, 1:馬番, 2:CPU, 3:馬名, 4:ダート, 5:コース, 6:距離, 7:前走, 8:時計...
                 data[umaban].update({
-                    "fac_crs": get_m(5), # コース
-                    "fac_dis": get_m(6), # 距離
-                    "fac_zen": get_m(7)  # 前走
+                    "fac_crs": get_m(5),
+                    "fac_dis": get_m(6),
+                    "fac_zen": get_m(7)
                 })
 
     return data
@@ -425,8 +508,11 @@ def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
     url = f"{BASE_URL}/cyuou/cpu/{race_id}"
     driver.get(url)
     try:
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "main")))
-    except: pass
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "main"))
+        )
+    except:
+        pass
     return parse_keibabook_cpu(driver.page_source, is_shinba)
 
 # ==================================================
@@ -434,34 +520,29 @@ def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
 # ==================================================
 def _parse_netkeiba_past_td(td) -> str:
     """netkeibaの過去走セル（td.Past）を解析して文字列化"""
-    if not td: return "-"
-    
-    # 日付・場所
+    if not td:
+        return "-"
+
     data01 = td.find("div", class_="Data01")
     date_place = _clean_text_ja(data01.get_text(strip=True)) if data01 else ""
-    
-    # レース名
+
     data02 = td.find("div", class_="Data02")
     race_name = _clean_text_ja(data02.get_text(strip=True)) if data02 else ""
-    
-    # 騎手・斤量
+
     data03 = td.find("div", class_="Data03")
     jockey_weight = _clean_text_ja(data03.get_text(" ", strip=True)) if data03 else ""
-    
-    # 着順
+
     rank = "?"
     rank_tag = td.find("span", class_="Num")
     if not rank_tag:
         rank_tag = td.find("div", class_="Rank") or td.find("span", class_="Rank") or td.find("span", class_="Order")
-    
+
     if rank_tag:
         rank = _clean_text_ja(rank_tag.get_text(strip=True))
 
-    # タイム・距離
     data05 = td.find("div", class_="Data05")
     time_dist = _clean_text_ja(data05.get_text(" ", strip=True)) if data05 else ""
 
-    # 通過順
     passing = ""
     data06 = td.find("div", class_="Data06")
     if data06:
@@ -470,13 +551,13 @@ def _parse_netkeiba_past_td(td) -> str:
         if match:
             passing = match.group(1)
         if not passing:
-             match_single = re.match(r"^(\d{1,2})\s", raw_d6)
-             if match_single:
-                 passing = match_single.group(1)
+            match_single = re.match(r"^(\d{1,2})\s", raw_d6)
+            if match_single:
+                passing = match_single.group(1)
 
     if len(date_place) < 2:
         return "-"
-    
+
     if passing:
         rank_display = f"{passing}→{rank}着"
     else:
@@ -486,20 +567,23 @@ def _parse_netkeiba_past_td(td) -> str:
 
 def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
     nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place, "")
-    if not nk_place: return {}
-    
+    if not nk_place:
+        return {}
+
     nk_race_id = f"{year}{nk_place}{kai.zfill(2)}{day.zfill(2)}{race_num.zfill(2)}"
     url = f"https://race.netkeiba.com/race/shutuba_past.html?race_id={nk_race_id}&rf=shutuba_submenu"
-    
+
     driver.get(url)
     try:
-        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "Shutuba_Past5_Table")))
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "Shutuba_Past5_Table"))
+        )
     except:
         return {}
-    
+
     soup = BeautifulSoup(driver.page_source, "html.parser")
     data = {}
-    
+
     rows = soup.find_all("tr", class_="HorseList")
     for tr in rows:
         waku_tds = tr.find_all("td", class_="Waku")
@@ -509,7 +593,8 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
             if txt:
                 umaban = txt
                 break
-        if not umaban: continue
+        if not umaban:
+            continue
 
         jockey_td = tr.find("td", class_="Jockey")
         jockey = "不明"
@@ -525,15 +610,15 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
 
         past_tds = tr.find_all("td", class_="Past")
         past_list = []
-        for td in past_tds[:3]: 
+        for td in past_tds[:3]:
             if "Rest" in td.get("class", []):
                 past_list.append("(放牧/休養)")
             else:
                 p_text = _parse_netkeiba_past_td(td)
                 past_list.append(p_text)
-        
+
         data[umaban] = {"jockey": jockey, "past": past_list}
-        
+
     return data
 
 # ==================================================
@@ -550,11 +635,17 @@ def stream_dify_workflow(full_text: str):
         "user": "keiba-bot",
     }
     headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
-    
+
     try:
-        res = requests.post("https://api.dify.ai/v1/workflows/run", headers=headers, json=payload, stream=True)
+        res = requests.post(
+            "https://api.dify.ai/v1/workflows/run",
+            headers=headers,
+            json=payload,
+            stream=True
+        )
         for line in res.iter_lines():
-            if not line: continue
+            if not line:
+                continue
             decoded = line.decode("utf-8").replace("data: ", "")
             try:
                 data = json.loads(decoded)
@@ -562,10 +653,12 @@ def stream_dify_workflow(full_text: str):
                 if event == "workflow_finished":
                     outputs = data.get("data", {}).get("outputs", {})
                     for val in outputs.values():
-                        if isinstance(val, str): yield val
+                        if isinstance(val, str):
+                            yield val
                 if event == "message" or "answer" in data:
                     yield data.get("answer", "")
-            except: pass
+            except:
+                pass
     except Exception as e:
         yield f"Error: {e}"
 
@@ -575,21 +668,21 @@ def stream_dify_workflow(full_text: str):
 def run_all_races(target_races=None):
     race_nums = target_races if target_races else list(range(1, 13))
     race_nums = [int(r) for r in race_nums]
-    
-    base_id = f"{YEAR}{KAI}{PLACE}{DAY}" 
-    
+
+    base_id = f"{YEAR}{KAI}{PLACE}{DAY}"
+
     driver = build_driver()
     try:
         st.info(f"ログイン中... (ID: {KEIBA_ID[:2]}**)")
         login_keibabook(driver)
         st.success("ログイン成功")
-        
+
         combined_text = ""
 
         for r in race_nums:
             race_num_str = f"{r:02}"
             race_id = base_id + race_num_str
-            
+
             st.markdown(f"### {PLACE_NAMES.get(PLACE, '場')} {r}R")
             status = st.empty()
             status.text("データ収集中...")
@@ -601,14 +694,16 @@ def run_all_races(target_races=None):
                 continue
 
             # --- 新馬戦(メイクデビュー)判定 ---
-            race_title = header_info.get('header_text', '')
+            race_title = header_info.get("header_text", "")
             is_shinba = "新馬" in race_title or "メイクデビュー" in race_title
-            
             if is_shinba:
                 st.caption("🌱 新馬戦(メイクデビュー)モードで解析します")
 
             # 2. CPU予想 (新馬フラグを渡す)
             cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
+
+            # ★追加：スピード指数の新算出＆レース内偏差値（0-100）
+            cpu_data = compute_race_speed_scores(cpu_data)
 
             # 3. 前走インタビュー
             interview_data = fetch_zenkoso_interview(driver, race_id)
@@ -625,25 +720,43 @@ def run_all_races(target_races=None):
                 d_info = danwa_data[umaban]
                 c_info = cpu_data.get(umaban, {})
                 i_text = interview_data.get(umaban, "なし")
-                k_info = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"}) 
+                k_info = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"})
                 n_info = nk_data.get(umaban, {})
 
                 # 戦績テキスト
                 past_list = n_info.get("past", [])
                 past_str = " / ".join(past_list) if past_list else "情報なし"
-                
-                # 指数テキスト (共通)
-                sp_str = f"指数(前/2/3/平):{c_info.get('sp_last','-')}/{c_info.get('sp_2','-')}/{c_info.get('sp_3','-')}/{c_info.get('sp_avg','-')}"
-                
+
+                # 指数テキスト（元の形式は維持）
+                sp_str = (
+                    f"指数(前/2/3/平):{c_info.get('sp_last','-')}/"
+                    f"{c_info.get('sp_2','-')}/"
+                    f"{c_info.get('sp_3','-')}/"
+                    f"{c_info.get('sp_avg','-')}"
+                )
+
+                # ★追加：新スピード指数とレース内スピード偏差値（0-100）
+                # raw_speed = (max3*4 + avg) / 5
+                new_speed_str = (
+                    f"スピード指数(最高×4+平均)/5:{c_info.get('raw_speed','-')} "
+                    f"スピ偏差値(レース内0-100):{c_info.get('speed_dev','-')}"
+                )
+
                 # --- ファクターテキストの分岐 ---
                 if is_shinba:
-                    # 新馬戦用フォーマット (出脚/血統/動き)
-                    fac_str = f"F(出脚/血統/動き):{c_info.get('fac_deashi','-')}/{c_info.get('fac_kettou','-')}/{c_info.get('fac_ugoki','-')}"
+                    fac_str = (
+                        f"F(出脚/血統/動き):{c_info.get('fac_deashi','-')}/"
+                        f"{c_info.get('fac_kettou','-')}/"
+                        f"{c_info.get('fac_ugoki','-')}"
+                    )
                 else:
-                    # 通常レース用フォーマット (コース/距離/前走)
-                    fac_str = f"F(コ/距/前):{c_info.get('fac_crs','-')}/{c_info.get('fac_dis','-')}/{c_info.get('fac_zen','-')}"
-                
-                cpu_str = f"{sp_str} {fac_str}"
+                    fac_str = (
+                        f"F(コ/距/前):{c_info.get('fac_crs','-')}/"
+                        f"{c_info.get('fac_dis','-')}/"
+                        f"{c_info.get('fac_zen','-')}"
+                    )
+
+                cpu_str = f"{sp_str} {new_speed_str} {fac_str}"
 
                 # 調教テキスト
                 chokyo_str = f"短評:{k_info['tanpyo']} / 詳細:{k_info['details']}"
@@ -671,9 +784,9 @@ def run_all_races(target_races=None):
                 ai_output += chunk
                 result_area.markdown(ai_output + "▌")
             result_area.markdown(ai_output)
-            
+
             combined_text += f"\n\n--- {r}R ---\n{ai_output}"
-            
+
             render_copy_button(ai_output, f"{r}R コピー", f"copy_btn_{r}")
             status.success("完了")
 
@@ -685,5 +798,5 @@ def run_all_races(target_races=None):
         driver.quit()
 
 if __name__ == "__main__":
-    st.title("🏇 競馬AI予想データ生成 (新馬対応版)")
+    st.title("🏇 競馬AI予想データ生成 (新馬対応版・スピード相対化)")
     run_all_races()

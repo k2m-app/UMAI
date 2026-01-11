@@ -31,13 +31,12 @@ PLACE_NAMES = {
     "05": "中山", "06": "福島", "07": "新潟", "08": "札幌", "09": "函館",
 }
 
-# 年の選択肢（2026をデフォルトにするため先頭に配置）
+# 年の選択肢
 YEAR_OPTIONS = ["2026", "2025"]
 
 # ==================================================
 # Session state init
 # ==================================================
-# 3場分の設定を保持するための初期化
 MAX_VENUES = 3
 
 if "combined_output" not in st.session_state:
@@ -86,7 +85,7 @@ def set_preset(v_idx, mode):
 # ==================================================
 # Main UI
 # ==================================================
-st.title("UMAI Multi")
+st.title("UMAI")
 st.caption("最大3つの開催場を一括設定し、連続で予想を実行します。")
 
 # タブで会場切り替え
@@ -102,16 +101,14 @@ for v_idx, tab in enumerate(tabs):
         if is_active:
             col_p1, col_p2, col_p3, col_p4 = st.columns([1, 1, 1, 1])
             with col_p1:
-                # 【修正箇所】テキスト入力からセレクトボックスに変更
+                # keyを指定しているので、index/value指定は不要（Stateの値が優先される）
                 st.selectbox("年", YEAR_OPTIONS, key=f"{prefix}_year")
             with col_p2:
                 st.selectbox("回", [f"{i:02}" for i in range(1, 7)], key=f"{prefix}_kai")
             with col_p3:
-                # keyからindex逆算
+                # keyを指定しているので index=... は削除
                 opts = list(PLACE_NAMES.keys())
-                curr = st.session_state[f"{prefix}_place"]
-                idx = opts.index(curr) if curr in opts else 0
-                st.selectbox("場所", opts, format_func=lambda x: f"{x}:{PLACE_NAMES[x]}", index=idx, key=f"{prefix}_place")
+                st.selectbox("場所", opts, format_func=lambda x: f"{x}:{PLACE_NAMES[x]}", key=f"{prefix}_place")
             with col_p4:
                 st.selectbox("日目", [f"{i:02}" for i in range(1, 15)], key=f"{prefix}_day")
             

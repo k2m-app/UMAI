@@ -41,13 +41,14 @@ MAX_VENUES = 3
 if "combined_output" not in st.session_state:
     st.session_state.combined_output = ""
 
-# デフォルト値（今日の日付などから推測、あるいは固定）
+# デフォルト値
 today = datetime.now()
 default_year = str(today.year)
 
 # 各会場の設定保存用State初期化
 for v_idx in range(MAX_VENUES):
     prefix = f"v{v_idx}"
+    # ここで初期値を設定しているので、後で value= を指定する必要はない
     if f"{prefix}_active" not in st.session_state:
         st.session_state[f"{prefix}_active"] = (v_idx == 0) # 最初だけActive
     if f"{prefix}_year" not in st.session_state:
@@ -95,8 +96,8 @@ jobs_config = [] # 実行時に渡す設定リスト
 for v_idx, tab in enumerate(tabs):
     prefix = f"v{v_idx}"
     with tab:
-        # アクティブ切り替え
-        is_active = st.toggle(f"この開催（開催設定{v_idx+1}）を有効にする", key=f"{prefix}_active", value=(v_idx==0))
+        # 【修正箇所】 value= を削除しました。keyで指定した変数の値が自動的に使われます。
+        is_active = st.toggle(f"この開催（開催設定{v_idx+1}）を有効にする", key=f"{prefix}_active")
         
         if is_active:
             col_p1, col_p2, col_p3, col_p4 = st.columns([1, 1, 1, 1])

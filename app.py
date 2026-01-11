@@ -1,6 +1,5 @@
 import streamlit as st
 import keiba_bot
-from datetime import datetime
 
 # ==================================================
 # App config
@@ -32,6 +31,9 @@ PLACE_NAMES = {
     "05": "中山", "06": "福島", "07": "新潟", "08": "札幌", "09": "函館",
 }
 
+# 年の選択肢（2026をデフォルトにするため先頭に配置）
+YEAR_OPTIONS = ["2026", "2025"]
+
 # ==================================================
 # Session state init
 # ==================================================
@@ -41,18 +43,17 @@ MAX_VENUES = 3
 if "combined_output" not in st.session_state:
     st.session_state.combined_output = ""
 
-# デフォルト値
-today = datetime.now()
-default_year = str(today.year)
-
 # 各会場の設定保存用State初期化
 for v_idx in range(MAX_VENUES):
     prefix = f"v{v_idx}"
-    # ここで初期値を設定しているので、後で value= を指定する必要はない
+    
     if f"{prefix}_active" not in st.session_state:
         st.session_state[f"{prefix}_active"] = (v_idx == 0) # 最初だけActive
+    
+    # 年の初期値は "2026"
     if f"{prefix}_year" not in st.session_state:
-        st.session_state[f"{prefix}_year"] = default_year
+        st.session_state[f"{prefix}_year"] = "2026"
+        
     if f"{prefix}_kai" not in st.session_state:
         st.session_state[f"{prefix}_kai"] = "01"
     if f"{prefix}_place" not in st.session_state:
@@ -96,13 +97,13 @@ jobs_config = [] # 実行時に渡す設定リスト
 for v_idx, tab in enumerate(tabs):
     prefix = f"v{v_idx}"
     with tab:
-        # 【修正箇所】 value= を削除しました。keyで指定した変数の値が自動的に使われます。
         is_active = st.toggle(f"この開催（開催設定{v_idx+1}）を有効にする", key=f"{prefix}_active")
         
         if is_active:
             col_p1, col_p2, col_p3, col_p4 = st.columns([1, 1, 1, 1])
             with col_p1:
-                st.text_input("年", key=f"{prefix}_year")
+                # 【修正箇所】テキスト入力からセレクトボックスに変更
+                st.selectbox("年", YEAR_OPTIONS, key=f"{prefix}_year")
             with col_p2:
                 st.selectbox("回", [f"{i:02}" for i in range(1, 7)], key=f"{prefix}_kai")
             with col_p3:

@@ -119,31 +119,38 @@ def _safe_int(s, default=0) -> int:
         return default
 
 # ==================================================
-# スピード指数（競馬予想として最も扱いやすい形）
+# スピード指数（“絶対感”寄りに調整：差が出すぎない 0〜100）
 # ==================================================
-def compute_speed_metrics(cpu_data: dict, T: float = 55.0, k: float = 4.0) -> dict:
+def compute_speed_metrics(
+    cpu_data: dict,
+    # raw計算の重み（最大値を効かせつつ過剰にしない）
+    w_max: float = 2.0,
+    w_last: float = 1.2,
+    w_avg: float = 1.8,
+
+    # ABS: raw→0-100（固定スケールで絶対感）
+    abs_center: float = 60.0,   # rawの中心（この付近が50点前後）
+    abs_scale: float = 10.0,    # 大きいほど差が出にくい（=なだらか）
+
+    # REL: dev→0-100（tanhで圧縮して差を出しすぎない）
+    rel_s: float = 18.0,        # 大きいほど差が出にくい（=なだらか）
+
+    # FINAL: ABSを主、RELを従に（絶対感を優先）
+    mix_abs: float = 0.65       # 0.65推奨（0.55〜0.75くらいで調整）
+) -> dict:
     """
-    【狙い】
-    - クラス差（未勝利/重賞）でスピード指数の影響が歪む問題を解消するため、同レース内の相対評価にする
-    - ただし「上位が複数いると偏差値が固まる」問題を避けるため、上位側だけメリハリを付ける
-
-    【手順】
-    1) スピード基礎値 raw =（最高値×3 ＋ 前走 ＋ 平均）÷5
-    2) raw を同レース内で偏差値 dev（平均50, SD10）にする
-    3) dev を “上位強調スコア” score（0〜100）に変換
-       score = 100 / (1 + exp(-(dev - T)/k))
-       - T: 上位の入口（55推奨）
-       - k: メリハリ（4推奨、小さいほど強調）
-
-    return:
+    出力:
       {
         umaban: {
-          "raw": float,
-          "dev": float,    # 偏差値（0〜100クリップ）
-          "score": float   # 0〜100（上位強調）
+          "raw": float,     # CPU指数由来の基礎値（監査用）
+          "dev": float,     # レース内偏差値（監査用, 0-100クリップ）
+          "abs": float,     # 絶対軸スコア（0-100, ゆるいS字）
+          "rel": float,     # 相対軸スコア（0-100, tanh圧縮）
+          "score": float    # 最終スピード指数（0-100）
         }
       }
     """
+
     raw_scores = {}
 
     for umaban, d in cpu_data.items():
@@ -158,7 +165,8 @@ def compute_speed_metrics(cpu_data: dict, T: float = 55.0, k: float = 4.0) -> di
         avg = sum(vals) / len(vals)
         max_v = max(vals)
 
-        raw = (max_v * 3 + last + avg) / 5.0
+        denom = (w_max + w_last + w_avg)
+        raw = (max_v * w_max + last * w_last + avg * w_avg) / denom
         raw_scores[umaban] = raw
 
     if not raw_scores:
@@ -168,22 +176,43 @@ def compute_speed_metrics(cpu_data: dict, T: float = 55.0, k: float = 4.0) -> di
     mean = sum(values) / len(values)
     std = math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
 
+    def _clip01(x: float) -> float:
+        return max(0.0, min(100.0, x))
+
     out = {}
     for umaban, raw in raw_scores.items():
+        # --- dev（相対監査用） ---
         if std == 0:
             dev = 50.0
         else:
             dev = 50.0 + 10.0 * (raw - mean) / std
+        dev_clip = _clip01(round(dev, 1))
 
-        # 偏差値は表示・監査用として0〜100にクリップ
-        dev_clip = max(0.0, min(100.0, round(dev, 1)))
+        # --- ABS（絶対軸：raw→0-100。なだらかS字で過剰な差を抑える） ---
+        # 100/(1+exp(-(raw-center)/scale))
+        # scaleを大きくすると差が出にくい
+        x_abs = (raw - float(abs_center)) / float(abs_scale)
+        abs_score = 100.0 / (1.0 + math.exp(-x_abs))
+        abs_score = _clip01(round(abs_score, 1))
 
-        # 上位強調スコア（0〜100）
-        x = (dev - float(T)) / float(k)
-        score = 100.0 / (1.0 + math.exp(-x))
-        score = max(0.0, min(100.0, round(score, 1)))
+        # --- REL（相対軸：dev→0-100。tanhで差を圧縮） ---
+        # 50 + 50*tanh((dev-50)/s)
+        x_rel = (dev - 50.0) / float(rel_s)
+        rel_score = 50.0 + 50.0 * math.tanh(x_rel)
+        rel_score = _clip01(round(rel_score, 1))
 
-        out[umaban] = {"raw": round(raw, 2), "dev": dev_clip, "score": score}
+        # --- FINAL（ABS主 + REL従） ---
+        mix_abs_clamped = max(0.0, min(1.0, float(mix_abs)))
+        final = mix_abs_clamped * abs_score + (1.0 - mix_abs_clamped) * rel_score
+        final = _clip01(round(final, 1))
+
+        out[umaban] = {
+            "raw": round(raw, 2),
+            "dev": dev_clip,
+            "abs": abs_score,
+            "rel": rel_score,
+            "score": final
+        }
 
     return out
 
@@ -700,9 +729,16 @@ def run_all_races(target_races=None):
             # 2. CPU予想
             cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
 
-            # ★スピード指標を算出（偏差値dev + 上位強調score）
-            # 競馬予想の見た目として自然な「メリハリ」は score を使うのがおすすめ
-            speed_metrics = compute_speed_metrics(cpu_data, T=55.0, k=4.0)
+            # ★調整済みスピード指標（差が出すぎない 0〜100）
+            # もっと差を縮めたい → abs_scale を大きく / rel_s を大きく / mix_abs を大きく
+            # もっと差を付けたい → abs_scale を小さく / rel_s を小さく / mix_abs を小さく
+            speed_metrics = compute_speed_metrics(
+                cpu_data,
+                w_max=2.0, w_last=1.2, w_avg=1.8,
+                abs_center=60.0, abs_scale=10.0,
+                rel_s=18.0,
+                mix_abs=0.65
+            )
 
             # 3. 前走インタビュー
             interview_data = fetch_zenkoso_interview(driver, race_id)
@@ -726,17 +762,17 @@ def run_all_races(target_races=None):
                 past_list = n_info.get("past", [])
                 past_str = " / ".join(past_list) if past_list else "情報なし"
 
-                # スピード（表示用score + 監査用dev + raw）
+                # スピード（scoreが本命。abs/rel/dev/rawは監査用）
                 sm = speed_metrics.get(umaban, {})
-                sp_score = sm.get("score", "-")  # 0〜100（上位強調）
-                sp_dev = sm.get("dev", "-")      # 偏差値（0〜100クリップ）
-                sp_raw = sm.get("raw", "-")      # 基礎値
+                sp_score = sm.get("score", "-")  # 最終 0〜100（差が出すぎない）
+                sp_abs   = sm.get("abs", "-")    # 絶対軸
+                sp_rel   = sm.get("rel", "-")    # 相対軸
+                sp_dev   = sm.get("dev", "-")    # 偏差値（監査）
+                sp_raw   = sm.get("raw", "-")    # 基礎値（監査）
 
-                # 指数テキスト（元の前/2/3/平は保持 + スピード指標を付与）
-                # LLMには「score」を主に使わせ、dev/rawは補助情報として残す
                 sp_str = (
                     f"指数(前/2/3/平):{c_info.get('sp_last','-')}/{c_info.get('sp_2','-')}/{c_info.get('sp_3','-')}/{c_info.get('sp_avg','-')} "
-                    f"スピード指数:{sp_score} 偏差値:{sp_dev} 基礎値:{sp_raw}"
+                    f"スピード指数:{sp_score} (ABS:{sp_abs} REL:{sp_rel} 偏差値:{sp_dev} 基礎値:{sp_raw})"
                 )
 
                 # ファクターテキスト分岐
@@ -750,7 +786,6 @@ def run_all_races(target_races=None):
                 # 調教テキスト
                 chokyo_str = f"短評:{k_info['tanpyo']} / 詳細:{k_info['details']}"
 
-                # 入力（LLM側のプロンプト要件に合わせて、HTMLタグは使わない）
                 line = (
                     f"▼馬番{umaban} {d_info['name']} (騎手:{n_info.get('jockey','-')})\n"
                     f"【厩舎の話】{d_info['danwa']}\n"

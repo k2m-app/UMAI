@@ -75,18 +75,22 @@ BABA_BIAS_DATA = {
     "札幌芝1200": {3: [1, 8], 2: [6, 7]},
 }
 
+
 # ==================================================
 # ユーティリティ
 # ==================================================
 def _clean_text_ja(s: str) -> str:
-    if not s: return ""
+    if not s:
+        return ""
     s = s.replace("\u3000", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+
 def _is_missing_marker(s: str) -> bool:
     t = _clean_text_ja(s)
     return t in {"－", "-", "—", "―", "‐", ""}
+
 
 def render_copy_button(text: str, label: str, dom_id: str):
     safe_text = json.dumps(text)
@@ -101,24 +105,31 @@ def render_copy_button(text: str, label: str, dom_id: str):
     <script>
     function copyToClipboard_{dom_id}() {{
         const text = {safe_text};
-        navigator.clipboard.writeText(text).then(() => {{}}).catch(err => {{}});
+        navigator.clipboard.writeText(text).then(() => {{
+        }}).catch(err => {{
+        }});
     }}
     </script>
     """
     components.html(html, height=40)
 
+
 def _safe_int(s, default=0) -> int:
     try:
-        if s is None: return default
-        if isinstance(s, (int, float)): return int(s)
+        if s is None:
+            return default
+        if isinstance(s, (int, float)):
+            return int(s)
         ss = str(s).strip()
-        if ss in {"", "-", "－"}: return default
+        if ss in {"", "-", "－"}:
+            return default
         return int(ss)
     except:
         return default
 
+
 # ==================================================
-# スピード指数計算
+# スピード指数
 # ==================================================
 def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.8, w_avg: float = 1.2) -> dict:
     raw_scores = {}
@@ -127,14 +138,16 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
         two = _safe_int(d.get("sp_2"), 0)
         thr = _safe_int(d.get("sp_3"), 0)
         vals = [v for v in [last, two, thr] if v > 0]
-        if not vals: continue
+        if not vals:
+            continue
         avg = sum(vals) / len(vals)
         max_v = max(vals)
         denom = (w_max + w_last + w_avg)
         raw = (max_v * w_max + last * w_last + avg * w_avg) / denom
         raw_scores[umaban] = raw
 
-    if not raw_scores: return {}
+    if not raw_scores:
+        return {}
 
     values = list(raw_scores.values())
     mean = sum(values) / len(values)
@@ -142,17 +155,26 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
 
     hensachi_scores = {}
     for umaban, raw in raw_scores.items():
-        if std == 0: hensachi = 50.0
-        else: hensachi = 50.0 + 10.0 * (raw - mean) / std
+        if std == 0:
+            hensachi = 50.0
+        else:
+            hensachi = 50.0 + 10.0 * (raw - mean) / std
         hensachi_scores[umaban] = hensachi
 
-    max_hensachi = max(hensachi_scores.values()) if hensachi_scores else 0
+    if not hensachi_scores:
+        return {}
+    
+    max_hensachi = max(hensachi_scores.values())
+    
     out = {}
     for umaban, raw in raw_scores.items():
         hensachi = hensachi_scores[umaban]
-        if max_hensachi == 0: score = 0.0
-        elif max_hensachi == min(hensachi_scores.values()): score = 30.0
-        else: score = 30.0 * (hensachi / max_hensachi)
+        if max_hensachi == 0:
+             score = 0.0
+        elif max_hensachi == min(hensachi_scores.values()):
+            score = 30.0
+        else:
+            score = 30.0 * (hensachi / max_hensachi)
         
         out[umaban] = {
             "raw": round(raw, 2),
@@ -160,6 +182,7 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
             "score": round(score, 2)
         }
     return out
+
 
 # ==================================================
 # 馬場バイアス評価
@@ -172,15 +195,21 @@ def extract_race_info(race_title: str) -> dict:
         result["day"] = int(place_day_match.group(3))
     
     distance_match = re.search(r'(\d{3,4})m', race_title)
-    if distance_match: result["distance"] = distance_match.group(1)
+    if distance_match:
+        result["distance"] = distance_match.group(1)
     
-    if 'ダート' in race_title: result["track_type"] = "dirt"
-    elif '芝' in race_title: result["track_type"] = "turf"
+    if 'ダート' in race_title:
+        result["track_type"] = "dirt"
+    elif '芝' in race_title:
+        result["track_type"] = "turf"
     
-    if '内' in race_title: result["course_variant"] = "内"
-    elif '外' in race_title: result["course_variant"] = "外"
+    if '内' in race_title:
+        result["course_variant"] = "内"
+    elif '外' in race_title:
+        result["course_variant"] = "外"
     
     return result
+
 
 def calculate_baba_bias(waku: int, race_title: str) -> dict:
     kaisai_bias = 0
@@ -213,11 +242,12 @@ def calculate_baba_bias(waku: int, race_title: str) -> dict:
         "kaisai_bias": kaisai_bias,
         "course_bias": course_bias,
         "total": kaisai_bias + course_bias,
-        "debug": ""
+        "debug": " | ".join(debug_info)
     }
 
+
 # ==================================================
-# Selenium
+# Selenium Setup
 # ==================================================
 def build_driver() -> webdriver.Chrome:
     options = Options()
@@ -227,20 +257,33 @@ def build_driver() -> webdriver.Chrome:
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1280,2200")
     options.add_argument("--lang=ja-JP")
-    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(60)
     return driver
 
+
 def login_keibabook(driver: webdriver.Chrome) -> None:
-    if not KEIBA_ID or not KEIBA_PASS: return
+    if not KEIBA_ID or not KEIBA_PASS:
+        return
     driver.get(f"{BASE_URL}/login/login")
     try:
-        WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.NAME, "login_id"))).send_keys(KEIBA_ID)
-        WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']"))).send_keys(KEIBA_PASS)
-        WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))).click()
+        WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.NAME, "login_id"))
+        ).send_keys(KEIBA_ID)
+        WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
+        ).send_keys(KEIBA_PASS)
+        WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))
+        ).click()
         time.sleep(1.0)
-    except: pass
+    except:
+        pass
+
 
 # ==================================================
 # Scraping Parsers
@@ -248,27 +291,37 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
 def parse_race_info_from_danwa(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     racetitle = soup.find("div", class_="racetitle")
-    if not racetitle: return {"header_text": ""}
-    header_parts = []
+    if not racetitle:
+        return {"header_text": ""}
+
     racemei = racetitle.find("div", class_="racemei")
-    if racemei: header_parts.extend([p.get_text(strip=True) for p in racemei.find_all("p")])
+    header_parts = []
+    if racemei:
+        for p in racemei.find_all("p"):
+            header_parts.append(p.get_text(strip=True))
+
     racetitle_sub = racetitle.find("div", class_="racetitle_sub")
-    if racetitle_sub: header_parts.extend([p.get_text(strip=True) for p in racetitle_sub.find_all("p")])
+    if racetitle_sub:
+        for p in racetitle_sub.find_all("p"):
+            header_parts.append(p.get_text(strip=True))
+
     return {"header_text": "\n".join(header_parts)}
+
 
 def parse_danwa_horses(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_=lambda c: c and "danwa" in str(c))
-    if not table or not table.tbody: return {}
+    if not table or not table.tbody:
+        return {}
     horses = {}
     current_umaban, current_waku = None, None
-    
+
     for tr in table.tbody.find_all("tr", recursive=False):
         if "spacer" in tr.get("class", []): continue
         waku_td = tr.find("td", class_="waku")
         umaban_td = tr.find("td", class_="umaban")
         bamei_td = tr.find("td", class_="left")
-        
+
         if waku_td and umaban_td and bamei_td:
             waku_p = waku_td.find("p")
             if waku_p:
@@ -277,56 +330,72 @@ def parse_danwa_horses(html: str) -> dict:
                         current_waku = re.sub(r"\D", "", cls)
                         break
             current_umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
-            raw_name = bamei_td.find("a").get_text(strip=True) if bamei_td.find("a") else bamei_td.get_text(strip=True)
+            anchor = bamei_td.find("a")
+            raw_name = anchor.get_text(strip=True) if anchor else bamei_td.get_text(strip=True)
             if current_umaban:
-                horses[current_umaban] = {"name": _clean_text_ja(raw_name), "waku": current_waku or "?", "danwa": ""}
+                horses[current_umaban] = {
+                    "name": _clean_text_ja(raw_name),
+                    "waku": current_waku if current_waku else "?",
+                    "danwa": ""
+                }
             continue
-        
+
         danwa_td = tr.find("td", class_="danwa")
         if danwa_td and current_umaban:
             comment = _clean_text_ja(danwa_td.get_text("\n", strip=True))
-            horses[current_umaban]["danwa"] += (" " + comment) if horses[current_umaban]["danwa"] else comment
-            
+            if horses[current_umaban]["danwa"]:
+                horses[current_umaban]["danwa"] += (" " + comment)
+            else:
+                horses[current_umaban]["danwa"] = comment
     return horses
+
 
 def fetch_keibabook_danwa(driver, race_id: str):
     driver.get(f"{BASE_URL}/cyuou/danwa/0/{race_id}")
-    try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.default.danwa")))
-    except: pass
+    try:
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.default.danwa")))
+    except:
+        pass
     html = driver.page_source
     return parse_race_info_from_danwa(html), parse_danwa_horses(html)
+
 
 def parse_keibabook_chokyo(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     data = {}
-    for tbl in soup.find_all("table", class_="cyokyo"):
+    tables = soup.find_all("table", class_="cyokyo")
+    for tbl in tables:
         umaban_td = tbl.find("td", class_="umaban")
         if not umaban_td: continue
         umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
         tanpyo_td = tbl.find("td", class_="tanpyo")
         tanpyo = _clean_text_ja(tanpyo_td.get_text(strip=True)) if tanpyo_td else "なし"
-        
         details = []
         detail_cell = tbl.find("td", colspan="5")
         if detail_cell:
             for child in detail_cell.children:
-                if child.name == "dl": details.append(" ".join([c.get_text(strip=True) for c in child.find_all(["dt", "dd"])]))
+                if child.name == "dl":
+                    details.append(" ".join([c.get_text(strip=True) for c in child.find_all(["dt", "dd"])]))
                 elif child.name == "table" and "cyokyodata" in child.get("class", []):
-                     times = child.find("tr", class_="time")
-                     if times: details.append(" ".join([td.get_text(strip=True) for td in times.find_all("td")]))
-                     awase = child.find("tr", class_="awase")
-                     if awase: details.append(_clean_text_ja(awase.get_text(strip=True)))
+                    time_tr = child.find("tr", class_="time")
+                    if time_tr: details.append(" ".join([td.get_text(strip=True) for td in time_tr.find_all("td")]))
+                    awase = child.find("tr", class_="awase")
+                    if awase: details.append(_clean_text_ja(awase.get_text(strip=True)))
             semekaisetu = detail_cell.find("div", class_="semekaisetu")
-            if semekaisetu: details.append(f"[攻め解説] {_clean_text_ja(semekaisetu.get_text(strip=True))}")
-            
-        data[umaban] = {"tanpyo": tanpyo, "details": _clean_text_ja(" ".join(details))}
+            if semekaisetu:
+                details.append(f"[攻め解説] {_clean_text_ja(semekaisetu.get_text(strip=True))}")
+        
+        full = " ".join(details)
+        data[umaban] = {"tanpyo": tanpyo, "details": re.sub(r"\s+", " ", full).strip()}
     return data
+
 
 def fetch_keibabook_chokyo(driver, race_id: str):
     driver.get(f"{BASE_URL}/cyuou/cyokyo/0/{race_id}")
     try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "cyokyo")))
     except: pass
     return parse_keibabook_chokyo(driver.page_source)
+
 
 def parse_zenkoso_interview(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
@@ -350,13 +419,15 @@ def parse_zenkoso_interview(html: str) -> dict:
             current_umaban = None
     return data
 
+
 def fetch_zenkoso_interview(driver, race_id: str):
     driver.get(f"{BASE_URL}/cyuou/syoin/{race_id}")
     try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.default.syoin")))
     except: pass
     return parse_zenkoso_interview(driver.page_source)
 
-def parse_keibabook_cpu(html: str, is_shinba: bool) -> dict:
+
+def parse_keibabook_cpu(html: str, is_shinba: bool = False) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     data = {}
     speed_tbl = soup.find("table", id="cpu_speed_sort_table")
@@ -365,17 +436,20 @@ def parse_keibabook_cpu(html: str, is_shinba: bool) -> dict:
             umaban_td = tr.find("td", class_="umaban")
             if not umaban_td: continue
             umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
+            if not umaban: continue
             tds = tr.find_all("td")
             if len(tds) < 8: continue
             
             def get_v(idx):
-                t = re.sub(r"\D", "", tds[idx].find("p").get_text(strip=True) if tds[idx].find("p") else "")
+                p = tds[idx].find("p")
+                t = re.sub(r"\D", "", p.get_text(strip=True)) if p else ""
                 v = int(t) if t else 0
                 return v if v < 900 else 0
             
-            vals = [x for x in [get_v(-1), get_v(-2), get_v(-3)] if x > 0]
+            last, two, thr = get_v(-1), get_v(-2), get_v(-3)
+            vals = [x for x in [last, two, thr] if x > 0]
             avg = round(sum(vals)/len(vals)) if vals else 0
-            data[umaban] = {"sp_last": str(get_v(-1) or "-"), "sp_2": str(get_v(-2) or "-"), "sp_3": str(get_v(-3) or "-"), "sp_avg": str(avg or "-")}
+            data[umaban] = {"sp_last": str(last or "-"), "sp_2": str(two or "-"), "sp_3": str(thr or "-"), "sp_avg": str(avg or "-")}
 
     factor_tbl = None
     for t in soup.find_all("table"):
@@ -388,11 +462,11 @@ def parse_keibabook_cpu(html: str, is_shinba: bool) -> dict:
             if not umaban_td: continue
             umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
             tds = tr.find_all("td")
-            
+            if len(tds) < 6: continue
             def get_m(idx):
                 if idx >= len(tds): return "-"
-                t = tds[idx].find("p").get_text(strip=True) if tds[idx].find("p") else ""
-                return t or "-"
+                p = tds[idx].find("p")
+                return p.get_text(strip=True) if p else "-"
             
             if umaban not in data: data[umaban] = {}
             if is_shinba:
@@ -401,11 +475,13 @@ def parse_keibabook_cpu(html: str, is_shinba: bool) -> dict:
                 data[umaban].update({"fac_crs": get_m(5), "fac_dis": get_m(6), "fac_zen": get_m(7)})
     return data
 
-def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool):
+
+def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
     driver.get(f"{BASE_URL}/cyuou/cpu/{race_id}")
     try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "main")))
     except: pass
     return parse_keibabook_cpu(driver.page_source, is_shinba)
+
 
 def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
     nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place, "")
@@ -426,19 +502,19 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
         if not umaban: continue
         
         jockey_td = tr.find("td", class_="Jockey")
-        jockey = _clean_text_ja(jockey_td.get_text(strip=True)) if jockey_td else "不明"
+        jockey = "不明"
+        if jockey_td:
+            a_tag = jockey_td.find("a")
+            jockey = a_tag.get_text(strip=True) if a_tag else jockey_td.get_text(strip=True)
+        jockey = _clean_text_ja(jockey)
         
         past_list = []
         for td in tr.find_all("td", class_="Past")[:3]:
             if "Rest" in td.get("class", []): past_list.append("(休)")
-            else:
-                d1 = td.find("div", class_="Data01"); d2 = td.find("div", class_="Data02"); d5 = td.find("div", class_="Data05")
-                rank_tag = td.find("span", class_="Num") or td.find("div", class_="Rank") or td.find("span", class_="Order")
-                rank = _clean_text_ja(rank_tag.get_text(strip=True)) if rank_tag else "?"
-                if d1: past_list.append(f"[{_clean_text_ja(d1.get_text())} {_clean_text_ja(d2.get_text()) if d2 else ''} {rank}着]")
-        
+            else: past_list.append(_parse_netkeiba_past_td(td))
         data[umaban] = {"jockey": jockey, "past": past_list}
     return data
+
 
 # ==================================================
 # Dify Streaming
@@ -447,8 +523,8 @@ def stream_dify_workflow(full_text: str):
     if not DIFY_API_KEY:
         yield "⚠️ DIFY_API_KEY 未設定"; return
     
-    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
     payload = {"inputs": {"text": full_text}, "response_mode": "streaming", "user": "keiba-bot"}
+    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
     
     try:
         res = requests.post("https://api.dify.ai/v1/workflows/run", headers=headers, json=payload, stream=True, timeout=90)
@@ -463,26 +539,18 @@ def stream_dify_workflow(full_text: str):
     except Exception as e:
         yield f"Error: {e}"
 
+
 # ==================================================
 # Main Execution (Batch)
 # ==================================================
 def run_batch_prediction(jobs_config):
-    """
-    複数場の設定を受け取り、ブラウザを一度立ち上げたら連続で処理する
-    jobs_config = [
-        {"year": "2026", "kai": "01", "place": "05", "day": "04", "races": [1,2...], "place_name": "中山"},
-        ...
-    ]
-    """
     driver = build_driver()
     full_output_log = ""
-    
     try:
         st.info(f"ログイン中... (ID: {KEIBA_ID[:2]}**)")
         login_keibabook(driver)
         st.success("ログイン成功。連続実行を開始します。")
 
-        # ジョブ（開催場）ループ
         for job_idx, job in enumerate(jobs_config):
             year = job["year"]
             kai = str(job["kai"]).zfill(2)
@@ -496,7 +564,6 @@ def run_batch_prediction(jobs_config):
             st.markdown(f"## 🏁 {place_name}開催 ({day}日目)")
             full_output_log += f"\n\n{'='*30}\n【{place_name}】 {year}年{kai}回{day}日目\n{'='*30}\n"
 
-            # レースループ
             for r in target_races:
                 race_num_str = f"{r:02}"
                 race_id = base_id + race_num_str
@@ -505,7 +572,6 @@ def run_batch_prediction(jobs_config):
                 status = st.empty()
                 status.text("データ収集中...")
                 
-                # --- データ取得 ---
                 header_info, danwa_data = fetch_keibabook_danwa(driver, race_id)
                 if not danwa_data:
                     st.error(f"{place_name} {r}R データ取得失敗 (ID:{race_id})")
@@ -520,7 +586,6 @@ def run_batch_prediction(jobs_config):
                 chokyo_data = fetch_keibabook_chokyo(driver, race_id)
                 nk_data = fetch_netkeiba_data(driver, year, kai, place, day, race_num_str)
                 
-                # --- プロンプト構築 ---
                 lines = []
                 for umaban in sorted(danwa_data.keys(), key=int):
                     d_info = danwa_data[umaban]
@@ -554,7 +619,6 @@ def run_batch_prediction(jobs_config):
 
                 full_prompt = f"■レース情報\n{race_title}\n\n■各馬詳細\n" + "\n".join(lines)
                 
-                # AI生成
                 status.text("AI分析中...")
                 result_area = st.empty()
                 ai_output = ""
@@ -563,15 +627,10 @@ def run_batch_prediction(jobs_config):
                     result_area.markdown(ai_output + "▌")
                 
                 result_area.markdown(ai_output)
-                
-                # ログ蓄積
-                race_log = f"\n--- {place_name} {r}R ---\n{ai_output}"
-                full_output_log += race_log
-                
+                full_output_log += f"\n--- {place_name} {r}R ---\n{ai_output}"
                 render_copy_button(ai_output, f"{place_name}{r}R コピー", f"copy_{job_idx}_{r}")
                 status.success("完了")
             
-            # 1開催終了ごとの区切り
             st.success(f"✅ {place_name}開催分の処理が完了しました")
             
     except Exception as e:

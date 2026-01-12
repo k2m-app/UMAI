@@ -33,7 +33,7 @@ KEIBABOOK_TO_NETKEIBA_PLACE = {
 }
 
 # ==================================================
-# 馬場バイアス評価データ（完全版）
+# 馬場バイアス評価データ
 # ==================================================
 BABA_BIAS_DATA = {
     "中山ダート1200": {5: [6, 7, 8], 2: [5]},
@@ -193,7 +193,7 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
 
 
 # ==================================================
-# 馬場バイアス評価関数（完全版）
+# 馬場バイアス評価関数
 # ==================================================
 def extract_race_info(race_title: str) -> dict:
     result = {
@@ -317,7 +317,7 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
 
 
 # ==================================================
-# 競馬ブック:厩舎の話 (Danwa) - 枠番追加版
+# 競馬ブック:厩舎の話 (Danwa)
 # ==================================================
 def parse_race_info_from_danwa(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
@@ -631,12 +631,12 @@ def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
 
 
 # ==================================================
-# Netkeiba (騎手・戦績詳細取得)
+# Netkeiba (騎手・戦績詳細取得) & 近走指数計算
 # ==================================================
-def _parse_netkeiba_past_td(td) -> str:
-    """netkeibaの過去走セル(td.Past)を解析して文字列化"""
+def _parse_netkeiba_past_td(td) -> dict:
+    """netkeibaの過去走セル(td.Past)を解析して、文字列と計算用データを返す"""
     if not td:
-        return "-"
+        return {"text": "-", "passing_list": [], "rank_int": 999}
 
     data01 = td.find("div", class_="Data01")
     date_place = _clean_text_ja(data01.get_text(strip=True)) if data01 else ""
@@ -647,17 +647,25 @@ def _parse_netkeiba_past_td(td) -> str:
     data03 = td.find("div", class_="Data03")
     jockey_weight = _clean_text_ja(data03.get_text(" ", strip=True)) if data03 else ""
 
+    # 着順 (int)
     rank = "?"
+    rank_int = 999
     rank_tag = td.find("span", class_="Num")
     if not rank_tag:
         rank_tag = td.find("div", class_="Rank") or td.find("span", class_="Rank") or td.find("span", class_="Order")
     if rank_tag:
         rank = _clean_text_ja(rank_tag.get_text(strip=True))
+        try:
+            rank_int = int(re.sub(r"\D", "", rank))
+        except:
+            rank_int = 999
 
     data05 = td.find("div", class_="Data05")
     time_dist = _clean_text_ja(data05.get_text(" ", strip=True)) if data05 else ""
 
+    # 通過順
     passing = ""
+    passing_list = []
     data06 = td.find("div", class_="Data06")
     if data06:
         raw_d6 = _clean_text_ja(data06.get_text(strip=True))
@@ -665,15 +673,83 @@ def _parse_netkeiba_past_td(td) -> str:
         if match:
             passing = match.group(1)
         if not passing:
+            # "1" のように単独の場合
             match_single = re.match(r"^(\d{1,2})\s", raw_d6)
             if match_single:
                 passing = match_single.group(1)
+        
+        # リスト化 (例: "7-11-13-13" -> [7, 11, 13, 13])
+        if passing:
+            try:
+                passing_list = [int(x) for x in passing.split("-")]
+            except:
+                passing_list = []
 
     if len(date_place) < 2:
-        return "-"
+        return {"text": "-", "passing_list": [], "rank_int": 999}
 
     rank_display = f"{passing}→{rank}着" if passing else f"{rank}着"
-    return f"[{date_place} {race_name} {jockey_weight} {time_dist} ({rank_display})]"
+    full_text = f"[{date_place} {race_name} {jockey_weight} {time_dist} ({rank_display})]"
+    
+    return {
+        "text": full_text,
+        "passing_list": passing_list,
+        "rank_int": rank_int
+    }
+
+
+def calculate_kinsou_index(past_runs_data: list) -> float:
+    """
+    近走指数を計算する
+    ①近3走のどれかで「道中順位が4つ以上悪化」かつ「最終着順が最悪位置より2つ以上巻き返し」 -> +8
+    ②近3走のどれかで「道中順位が2つ以上悪化」かつ「最終着順が最悪位置より2つ以上巻き返し」 -> +5
+    ③近3走のうち50%以上で「4コーナーの順位が4番手以内」 -> +2
+    MAX 10点
+    """
+    # 過去データから有効なもの（着順や通過順があるもの）を近3走抽出
+    valid_runs = []
+    for run in past_runs_data:
+        if run["rank_int"] != 999 and run["passing_list"]:
+            valid_runs.append(run)
+    
+    recent_3 = valid_runs[:3]
+    if not recent_3:
+        return 0.0
+
+    base_score = 0
+    corner4_ok_count = 0
+    
+    for run in recent_3:
+        passes = run["passing_list"]
+        finish_rank = run["rank_int"]
+        
+        # Rule 3 Check (4コーナー <= 4)
+        # 配列の最後が4コーナー(または最終コーナー)と仮定
+        if passes[-1] <= 4:
+            corner4_ok_count += 1
+        
+        # Rule 1 & 2 Check
+        # 「道中順位が悪化」: 始点と最悪値(最大値)の差
+        start_pos = passes[0]
+        worst_pos = max(passes)
+        worsened = worst_pos - start_pos
+        
+        # 「巻き返し」: 最悪値 - 着順
+        recovery = worst_pos - finish_rank
+        
+        # 判定 (点数の高い方を優先)
+        if worsened >= 4 and recovery >= 2:
+            base_score = max(base_score, 8)
+        elif worsened >= 2 and recovery >= 2:
+            base_score = max(base_score, 5)
+
+    # Rule 3 Bonus
+    bonus = 0
+    if len(recent_3) > 0 and (corner4_ok_count / len(recent_3)) >= 0.5:
+        bonus = 2
+        
+    total = base_score + bonus
+    return min(float(total), 10.0)
 
 
 def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
@@ -720,14 +796,28 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
         jockey = _clean_text_ja(jockey)
 
         past_tds = tr.find_all("td", class_="Past")
-        past_list = []
-        for td in past_tds[:3]:
+        past_run_objects = [] # 計算用オブジェクト
+        past_str_list = [] # 表示用文字列リスト
+        
+        for td in past_tds[:5]: # 少し多めに取っておく
             if "Rest" in td.get("class", []):
-                past_list.append("(放牧/休養)")
+                # 休養等は計算には含めないが文字列には含める
+                past_str_list.append("(放牧/休養)")
             else:
-                past_list.append(_parse_netkeiba_past_td(td))
+                parsed = _parse_netkeiba_past_td(td)
+                if parsed["text"] != "-":
+                    past_run_objects.append(parsed)
+                    past_str_list.append(parsed["text"])
 
-        data[umaban] = {"jockey": jockey, "past": past_list}
+        # 指数計算
+        kinsou_idx = calculate_kinsou_index(past_run_objects)
+
+        # 表示は3走分まで
+        data[umaban] = {
+            "jockey": jockey, 
+            "past": past_str_list[:3], 
+            "kinsou_index": kinsou_idx
+        }
 
     return data
 
@@ -844,7 +934,12 @@ def run_batch_prediction(jobs_config):
                     baba_bias = calculate_baba_bias(int(waku) if waku.isdigit() else 0, race_title)
                     
                     past_str = " / ".join(n_info.get("past", [])) or "情報なし"
-                    sp_str = f"指数:{sm.get('score','-')}/30 (偏差値:{sm.get('hensachi','-')})"
+                    
+                    # スピード指数 & 近走指数
+                    sp_str = f"スピード指数:{sm.get('score','-')}/30 (偏差値:{sm.get('hensachi','-')})"
+                    kinsou_idx = n_info.get("kinsou_index", 0.0)
+                    kinsou_str = f"近走指数:{kinsou_idx:.1f}/10"
+                    
                     bias_str = f"バイアス:{baba_bias['total']}/10"
                     
                     if is_shinba:
@@ -854,7 +949,7 @@ def run_batch_prediction(jobs_config):
                         
                     line = (
                         f"▼{waku}枠{umaban}番 {d_info['name']} (騎手:{n_info.get('jockey','-')})\n"
-                        f"【データ】{sp_str} {bias_str} {fac_str}\n"
+                        f"【データ】{sp_str} {bias_str} {kinsou_str} {fac_str}\n"
                         f"【厩舎】{d_info['danwa']}\n"
                         f"【前走】{i_text}\n"
                         f"【調教】{k_info['tanpyo']} {k_info['details']}\n"

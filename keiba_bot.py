@@ -132,9 +132,6 @@ def _safe_int(s, default=0) -> int:
 # スピード指数（基本能力の偏差値化）
 # ==================================================
 def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.8, w_avg: float = 1.2) -> dict:
-    """
-    各馬のスピード指数（基本能力）を算出し、そのレース内での偏差値をスピード指数として返す。
-    """
     raw_scores = {}
     for umaban, d in cpu_data.items():
         last = _safe_int(d.get("sp_last"), 0)
@@ -147,7 +144,6 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
         avg = sum(vals) / len(vals)
         max_v = max(vals)
         
-        # 重み付け基本能力計算
         denom = (w_max + w_last + w_avg)
         raw = (max_v * w_max + last * w_last + avg * w_avg) / denom
         raw_scores[umaban] = raw
@@ -157,12 +153,10 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
 
     values = list(raw_scores.values())
     mean = sum(values) / len(values)
-    # 標準偏差
     std = math.sqrt(sum((v - mean) ** 2 for v in values) / len(values)) if len(values) > 1 else 0
 
     out = {}
     for umaban, raw in raw_scores.items():
-        # 偏差値（T-Score）算出: 50 + 10 * (個々の値 - 平均) / 標準偏差
         if std == 0:
             hensachi = 50.0
         else:
@@ -170,7 +164,7 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
         
         out[umaban] = {
             "raw_ability": round(raw, 2),
-            "speed_index": round(hensachi, 1) # これを「スピード指数」として使用
+            "speed_index": round(hensachi, 1)
         }
 
     return out
@@ -318,9 +312,6 @@ def fetch_keibabook_danwa(driver, race_id: str):
 
 
 def fetch_keibabook_chokyo(driver, race_id: str):
-    """
-    スマート版のHTML構造に対応した調教データ取得関数（修正版）
-    """
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
     driver.get(url)
     try:
@@ -330,43 +321,27 @@ def fetch_keibabook_chokyo(driver, race_id: str):
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
     data = {}
-
-    # HTML内には "table.cyokyo" が複数存在する（馬ごとのブロック）
     tables = soup.find_all("table", class_="cyokyo")
 
     for tbl in tables:
-        # 1. 馬番の取得
         umaban_td = tbl.find("td", class_="umaban")
         if not umaban_td:
             continue
         umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
-
-        # 2. 短評の取得
         tanpyo_td = tbl.find("td", class_="tanpyo")
         tanpyo = _clean_text_ja(tanpyo_td.get_text(strip=True)) if tanpyo_td else "なし"
-
-        # 3. 詳細データの取得
-        # 詳細データは colspan="5" のセルの中に、<dl class="dl-table"> と <table class="cyokyodata"> が交互に入っている
+        
         detail_cell = tbl.find("td", colspan="5")
         details_text_parts = []
-
         if detail_cell:
             current_header_info = ""
-            
-            # 子要素を順番に処理して、dl(ヘッダー)とtable(タイム)を紐付ける
             for child in detail_cell.children:
                 if isinstance(child, NavigableString):
                     continue
-                
-                # ヘッダー情報（日付、コース、助手、強さなど）
                 if child.name == 'dl' and 'dl-table' in child.get('class', []):
-                    # dtタグの中身を結合: 例 "助手", "1/7 美Ｗ 良", "強めに追う"
                     dt_texts = [dt.get_text(" ", strip=True) for dt in child.find_all('dt')]
                     current_header_info = " ".join([t for t in dt_texts if t])
-
-                # タイム情報
                 elif child.name == 'table' and 'cyokyodata' in child.get('class', []):
-                    # タイム行
                     time_tr = child.find('tr', class_='time')
                     time_str = ""
                     if time_tr:
@@ -376,31 +351,20 @@ def fetch_keibabook_chokyo(driver, race_id: str):
                             if txt:
                                 times.append(txt)
                         time_str = "-".join(times)
-
-                    # 併せ馬情報
                     awase_tr = child.find('tr', class_='awase')
                     awase_str = ""
                     if awase_tr:
                         awase_txt = _clean_text_ja(awase_tr.get_text(strip=True))
                         if awase_txt:
                             awase_str = f" (併せ: {awase_txt})"
-                    
-                    # 情報を結合してリストに追加
                     if current_header_info or time_str:
-                        # 例: [1/7 美Ｗ 良 助手 強めに追う] 85.6-69.1-54.3-39.8-12.8 [6] (併せ: ...)
                         details_text_parts.append(f"[{current_header_info}] {time_str}{awase_str}")
-                    
-                    # ヘッダー情報をリセット（次のdlが来るまで空にする）
                     current_header_info = ""
-
-        # 全調教履歴を結合
         full_details = "\n".join(details_text_parts) if details_text_parts else "詳細なし"
-
         data[umaban] = {
             "tanpyo": tanpyo,
             "details": full_details
         }
-        
     return data
 
 
@@ -450,7 +414,6 @@ def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
                 return val if val < 900 else 0
             data[umaban] = {"sp_last": get_v(-1), "sp_2": get_v(-2), "sp_3": get_v(-3)}
     
-    # ファクター取得
     factor_tbl = None
     for t in soup.find_all("table"):
         cap = t.find("caption")
@@ -500,16 +463,46 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
         
         past_str_list = []
         valid_runs = []
+        # 直近3走を取得
         for td in tr.find_all("td", class_="Past")[:3]:
             if "Rest" in td.get("class", []):
                 past_str_list.append("(放牧/休養)")
             else:
+                # 1. 日付・場所の取得
                 d01 = td.find("div", class_="Data01")
-                d02 = td.find("div", class_="Data02")
+                date_place = ""
+                if d01:
+                    # Data01には日付場所のspanと、着順のspan(class=Num)が混在している
+                    # まず最初のspan(日付場所)を取得を試みる
+                    first_span = d01.find("span")
+                    if first_span:
+                        date_place = _clean_text_ja(first_span.get_text(strip=True))
+                    else:
+                        # spanがない場合(構造崩れ対応)
+                        date_place = _clean_text_ja(d01.get_text(strip=True))
+
+                # 2. 着順の取得
                 rank_tag = td.find("span", class_="Num") or td.find("div", class_="Rank")
                 rank = rank_tag.get_text(strip=True) if rank_tag else "?"
-                txt = f"[{_clean_text_ja(d01.get_text() if d01 else '')} {rank}着]"
+                
+                # 3. 通過順の取得 (Data06)
+                # 例: "15-15 (38.7) 494(+16)" から "15-15" を抽出
+                d06 = td.find("div", class_="Data06")
+                passing_order = ""
+                if d06:
+                    raw_d06 = d06.get_text(strip=True)
+                    # 先頭にある数字とハイフンの塊を取得
+                    match = re.match(r'^([\d\-]+)', raw_d06)
+                    if match:
+                        passing_order = match.group(1)
+                
+                # フォーマット: [2025.12.28中山 1-1→2着]
+                # 通過順があれば矢印をつける
+                pass_str = f" {passing_order}→" if passing_order else " "
+                
+                txt = f"[{date_place}{pass_str}{rank}着]"
                 past_str_list.append(txt)
+                
                 try:
                     r_int = int(re.sub(r"\D", "", rank))
                     valid_runs.append({"rank_int": r_int})
@@ -585,7 +578,6 @@ def run_batch_prediction(jobs_config):
                 is_shinba = any(x in race_title for x in ["新馬", "メイクデビュー"])
                 
                 cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
-                # ★偏差値ベースのスピード指数計算
                 speed_metrics = compute_speed_metrics(cpu_data)
                 
                 interview_data = fetch_zenkoso_interview(driver, race_id)
@@ -601,7 +593,6 @@ def run_batch_prediction(jobs_config):
                     k = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"})
                     bias = calculate_baba_bias(int(d["waku"]) if d["waku"].isdigit() else 0, race_title)
                     
-                    # ★偏差値をそのまま表示
                     sp_val = sm.get("speed_index", "-")
                     sp_str = f"スピード指数(偏差値):{sp_val}"
                     
@@ -638,6 +629,6 @@ def run_batch_prediction(jobs_config):
             driver.quit()
     return full_output_log
 
-# Streamlit UI (簡易版呼び出し例)
+# Streamlit UI
 if __name__ == "__main__":
-    st.title("AI競馬予想システム (偏差値スピード指数版)")
+    st.title("AI競馬予想システム")

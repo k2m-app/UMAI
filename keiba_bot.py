@@ -10,7 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 # ==================================================
 # 【設定エリア】secretsから読み込み
@@ -318,26 +318,89 @@ def fetch_keibabook_danwa(driver, race_id: str):
 
 
 def fetch_keibabook_chokyo(driver, race_id: str):
+    """
+    スマート版のHTML構造に対応した調教データ取得関数（修正版）
+    """
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
     driver.get(url)
     try:
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "cyokyo")))
-    except: pass
+    except:
+        pass
+
     soup = BeautifulSoup(driver.page_source, "html.parser")
     data = {}
-    for tbl in soup.find_all("table", class_="cyokyo"):
+
+    # HTML内には "table.cyokyo" が複数存在する（馬ごとのブロック）
+    tables = soup.find_all("table", class_="cyokyo")
+
+    for tbl in tables:
+        # 1. 馬番の取得
         umaban_td = tbl.find("td", class_="umaban")
-        if not umaban_td: continue
+        if not umaban_td:
+            continue
         umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
+
+        # 2. 短評の取得
         tanpyo_td = tbl.find("td", class_="tanpyo")
         tanpyo = _clean_text_ja(tanpyo_td.get_text(strip=True)) if tanpyo_td else "なし"
-        details_text_parts = []
+
+        # 3. 詳細データの取得
+        # 詳細データは colspan="5" のセルの中に、<dl class="dl-table"> と <table class="cyokyodata"> が交互に入っている
         detail_cell = tbl.find("td", colspan="5")
+        details_text_parts = []
+
         if detail_cell:
-            semekaisetu_div = detail_cell.find("div", class_="semekaisetu")
-            if semekaisetu_div and semekaisetu_div.find("p"):
-                details_text_parts.append(f"[攻め解説] {_clean_text_ja(semekaisetu_div.find('p').get_text(strip=True))}")
-        data[umaban] = {"tanpyo": tanpyo, "details": " ".join(details_text_parts)}
+            current_header_info = ""
+            
+            # 子要素を順番に処理して、dl(ヘッダー)とtable(タイム)を紐付ける
+            for child in detail_cell.children:
+                if isinstance(child, NavigableString):
+                    continue
+                
+                # ヘッダー情報（日付、コース、助手、強さなど）
+                if child.name == 'dl' and 'dl-table' in child.get('class', []):
+                    # dtタグの中身を結合: 例 "助手", "1/7 美Ｗ 良", "強めに追う"
+                    dt_texts = [dt.get_text(" ", strip=True) for dt in child.find_all('dt')]
+                    current_header_info = " ".join([t for t in dt_texts if t])
+
+                # タイム情報
+                elif child.name == 'table' and 'cyokyodata' in child.get('class', []):
+                    # タイム行
+                    time_tr = child.find('tr', class_='time')
+                    time_str = ""
+                    if time_tr:
+                        times = []
+                        for td in time_tr.find_all('td'):
+                            txt = td.get_text(strip=True)
+                            if txt:
+                                times.append(txt)
+                        time_str = "-".join(times)
+
+                    # 併せ馬情報
+                    awase_tr = child.find('tr', class_='awase')
+                    awase_str = ""
+                    if awase_tr:
+                        awase_txt = _clean_text_ja(awase_tr.get_text(strip=True))
+                        if awase_txt:
+                            awase_str = f" (併せ: {awase_txt})"
+                    
+                    # 情報を結合してリストに追加
+                    if current_header_info or time_str:
+                        # 例: [1/7 美Ｗ 良 助手 強めに追う] 85.6-69.1-54.3-39.8-12.8 [6] (併せ: ...)
+                        details_text_parts.append(f"[{current_header_info}] {time_str}{awase_str}")
+                    
+                    # ヘッダー情報をリセット（次のdlが来るまで空にする）
+                    current_header_info = ""
+
+        # 全調教履歴を結合
+        full_details = "\n".join(details_text_parts) if details_text_parts else "詳細なし"
+
+        data[umaban] = {
+            "tanpyo": tanpyo,
+            "details": full_details
+        }
+        
     return data
 
 
@@ -550,7 +613,7 @@ def run_batch_prediction(jobs_config):
                         f"【データ】{sp_str} バイアス:{bias['total']} 近走指数:{kinsou_idx} {fac_str}\n"
                         f"【厩舎】{d['danwa']}\n"
                         f"【前走】{interview_data.get(umaban, 'なし')}\n"
-                        f"【調教】{k['tanpyo']} {k['details']}\n"
+                        f"【調教】{k['tanpyo']} \n{k['details']}\n"
                         f"【近走】{' / '.join(n.get('past', []))}\n"
                     )
                     lines.append(line)
@@ -578,4 +641,3 @@ def run_batch_prediction(jobs_config):
 # Streamlit UI (簡易版呼び出し例)
 if __name__ == "__main__":
     st.title("AI競馬予想システム (偏差値スピード指数版)")
-    # jobs_config の定義やボタンの設置などは環境に合わせて実装してください

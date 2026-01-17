@@ -21,7 +21,7 @@ DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 
 BASE_URL = "https://s.keibabook.co.jp"
 
-# 競馬ブック PLACEコード → netkeiba 競馬場コード
+# 競馬ブック PLACEコード → netkeiba/Yahoo 競馬場コード (共通)
 KEIBABOOK_TO_NETKEIBA_PLACE = {
     "08": "01", "09": "02", "06": "03", "07": "04", "04": "05",
     "05": "06", "02": "07", "00": "08", "01": "09", "03": "10",
@@ -239,7 +239,7 @@ def calculate_baba_bias(waku: int, race_title: str) -> dict:
 # ==================================================
 def build_driver() -> webdriver.Chrome:
     options = Options()
-    options.add_argument("--headless=new") # ローカルで画面を見たい場合はここをコメントアウト
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
@@ -442,7 +442,7 @@ def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
 
 
 # ==================================================
-# Netkeiba & 近走指数 & 対戦表用データ収集
+# Netkeiba & 近走指数
 # ==================================================
 def calculate_passing_order_bonus(pass_str: str, final_rank: int) -> float:
     """
@@ -488,7 +488,7 @@ def calculate_passing_order_bonus(pass_str: str, final_rank: int) -> float:
     return max_bonus
 
 
-def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map):
+def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
     nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place, "")
     if not nk_place: return {}
     nk_race_id = f"{year}{nk_place}{kai.zfill(2)}{day.zfill(2)}{race_num.zfill(2)}"
@@ -511,11 +511,8 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map)
         jockey = _clean_text_ja(jockey_td.get_text(strip=True)) if jockey_td else "不明"
         
         past_str_list = []
-        history_raw_data = [] 
         valid_runs = []
         
-        horse_name = horse_name_map.get(umaban, "Unknown")
-
         # 直近3走を取得
         for td in tr.find_all("td", class_="Past")[:3]:
             if "Rest" in td.get("class", []):
@@ -525,7 +522,6 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map)
                 date_place = ""
                 d02 = td.find("div", class_="Data02")
                 race_name_dist = ""
-                past_race_id = None
                 
                 if d01:
                     first_span = d01.find("span")
@@ -534,12 +530,6 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map)
                 
                 if d02:
                     race_name_dist = _clean_text_ja(d02.get_text(strip=True))
-                    a_tag = d02.find("a")
-                    if a_tag and a_tag.get("href"):
-                        href = a_tag.get("href")
-                        rid_match = re.search(r'race_id=(\d+)', href)
-                        if rid_match:
-                            past_race_id = rid_match.group(1)
 
                 rank_tag = td.find("span", class_="Num") or td.find("div", class_="Rank")
                 rank = rank_tag.get_text(strip=True) if rank_tag else "?"
@@ -562,17 +552,6 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map)
                     # 近走指数計算用データ
                     bonus = calculate_passing_order_bonus(passing_order, rank_int)
                     valid_runs.append({"rank_int": rank_int, "bonus": bonus})
-                    
-                    # 対戦表用データ
-                    if past_race_id:
-                        history_raw_data.append({
-                            "race_id": past_race_id,
-                            "date": date_place.split(" ")[0] if " " in date_place else date_place,
-                            "name": race_name_dist,
-                            "rank": rank,
-                            "rank_int": rank_int,
-                            "horse_name": horse_name
-                        })
                 except: pass
         
         # 近走指数計算
@@ -588,67 +567,181 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map)
             "jockey": jockey, 
             "past": past_str_list, 
             "kinsou_index": final_index,
-            "history_raw": history_raw_data
         }
     return data
 
 
 # ==================================================
-# 対戦表生成ロジック
+# Yahooスポーツナビ 対戦表取得ロジック
 # ==================================================
-def generate_battle_matrix(all_horses_data: dict, current_race_distance_str: str) -> str:
-    current_dist = extract_distance_int(current_race_distance_str)
-    race_map = {}
+def fetch_yahoo_matrix_data(driver, year, place, kai, day, race_num, current_distance_str):
+    """
+    Yahoo!スポーツナビの対戦成績ページをスクレイピングし、
+    Netkeibaリンク付きの対戦表テキストを生成する
+    """
+    # YahooのURL構築 (例: 2608010603)
+    # 年(2桁) + 場所(2桁) + 回(2桁) + 日(2桁) + レース(2桁)
     
-    for umaban, d in all_horses_data.items():
-        history = d.get("history_raw", [])
-        for h in history:
-            rid = h["race_id"]
-            if rid not in race_map:
-                race_map[rid] = {
-                    "info": {"date": h["date"], "name": h["name"], "id": rid},
-                    "horses": []
-                }
-            race_map[rid]["horses"].append({
-                "name": h["horse_name"],
-                "rank": h["rank"],
-                "rank_int": h["rank_int"]
-            })
-            
-    battles = []
-    for rid, data in race_map.items():
-        if len(data["horses"]) >= 2:
-            sorted_horses = sorted(data["horses"], key=lambda x: x["rank_int"])
-            battles.append({
-                "info": data["info"],
-                "horses": sorted_horses
-            })
-            
-    if not battles:
+    # Netkeiba用場所コードはYahooでも共通と仮定（JRAコード）
+    nk_place = KEIBABOOK_TO_NETKEIBA_PLACE.get(place, "")
+    if not nk_place:
+        return "場所コードエラーにより対戦表取得不可"
+        
+    y_year = year[-2:] # 下2桁
+    yahoo_race_id = f"{y_year}{nk_place}{kai.zfill(2)}{day.zfill(2)}{race_num.zfill(2)}"
+    
+    url = f"https://sports.yahoo.co.jp/keiba/race/matrix/{yahoo_race_id}"
+    driver.get(url)
+    
+    try:
+        # テーブルが表示されるまで待機（クラス名は提供されたHTMLに基づく）
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "hr-tableLeftTop--matrix")))
+    except:
+        return "対戦データなし (Yahooページ取得タイムアウト)"
+        
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    table = soup.find("table", class_="hr-tableLeftTop--matrix")
+    if not table:
         return "対戦データなし"
+        
+    # --- 1. ヘッダー情報の解析（過去レース情報） ---
+    thead = table.find("thead")
+    if not thead: return "対戦データ構造エラー"
+    
+    past_races = []
+    # 最初のthは「開催日/レース名...」の見出しなのでスキップ
+    header_th_list = thead.find_all("th")[1:]
+    
+    for th in header_th_list:
+        # レースリンク取得 (例: /keiba/race/index/2608010202)
+        link_tag = th.find("a")
+        if not link_tag:
+            past_races.append(None) # リンクがない列（想定外だが）
+            continue
+            
+        href = link_tag.get("href") # /keiba/race/index/2608010202
+        y_past_id = href.split("/")[-1]
+        
+        race_name = link_tag.get_text(strip=True)
+        
+        # 日付抽出 (span class="hr-tableLeftTop__item--date")
+        date_span = th.find("span", class_="hr-tableLeftTop__item--date")
+        race_date = date_span.get_text(" ", strip=True) if date_span else "日付不明"
+        
+        # 距離抽出 (3番目のspanだが、構造依存を避けるためテキスト全体から探すか、itemクラスを舐める)
+        # HTML例: <span class="hr-tableLeftTop__item">ダ1900m</span>
+        items = th.find_all("span", class_="hr-tableLeftTop__item")
+        race_dist_str = ""
+        for item in items:
+            t = item.get_text(strip=True)
+            if "m" in t and ("芝" in t or "ダ" in t or "障" in t):
+                race_dist_str = t
+                break
+        
+        past_races.append({
+            "id": y_past_id,
+            "name": race_name,
+            "date": race_date,
+            "dist_str": race_dist_str
+        })
+        
+    # --- 2. 行データの解析（各馬の着順） ---
+    tbody = table.find("tbody")
+    if not tbody: return "対戦データなし"
+    
+    # matrix_data: { yahoo_race_id: [ {horse:name, rank:10}, ... ] }
+    matrix_data = {}
+    
+    rows = tbody.find_all("tr")
+    for tr in rows:
+        # 馬名取得 (th a)
+        th_horse = tr.find("th")
+        if not th_horse: continue
+        horse_a = th_horse.find("a")
+        if not horse_a: continue
+        horse_name = horse_a.get_text(strip=True)
+        
+        # 結果セル取得
+        cells = tr.find_all("td")
+        for idx, td in enumerate(cells):
+            if idx >= len(past_races): break
+            race_info = past_races[idx]
+            if not race_info: continue
+            
+            # 着順抽出
+            # <td class="hr-tableLeftTop__data"><span>10</span>(2.2)<br>57.0</td>
+            # 不参加の場合は "-"
+            txt = td.get_text(strip=True)
+            if "-" in txt and len(txt) < 5: # 簡易判定
+                continue
+                
+            rank_span = td.find("span")
+            if rank_span:
+                rank = rank_span.get_text(strip=True)
+                
+                rid = race_info["id"]
+                if rid not in matrix_data:
+                    matrix_data[rid] = {
+                        "info": race_info,
+                        "results": []
+                    }
+                matrix_data[rid]["results"].append({
+                    "name": horse_name,
+                    "rank": rank
+                })
 
-    battles.sort(key=lambda x: x["info"]["id"], reverse=True)
+    # --- 3. 出力テキスト生成 ---
+    if not matrix_data:
+        return "対戦データなし"
+        
+    current_dist_int = extract_distance_int(current_distance_str)
+    
+    # 複数頭が出走しているレースのみフィルタリング
+    valid_battles = []
+    for rid, data in matrix_data.items():
+        if len(data["results"]) >= 2:
+            valid_battles.append(data)
+            
+    if not valid_battles:
+        return "対戦データなし（該当レースなし）"
+        
+    # ID降順（新しい順）
+    valid_battles.sort(key=lambda x: x["info"]["id"], reverse=True)
     
     output_lines = ["\n【対戦表】"]
-    for battle in battles:
+    
+    for battle in valid_battles:
         info = battle["info"]
-        past_dist = extract_distance_int(info["name"])
-        diff = past_dist - current_dist
+        results = battle["results"]
+        
+        # 着順ソート (数字変換できるものは数字で、以外は後ろへ)
+        def rank_key(r):
+            try: return int(re.sub(r"\D", "", r["rank"]))
+            except: return 999
+        results.sort(key=rank_key)
+        
+        # 距離差計算
+        past_dist_int = extract_distance_int(info["dist_str"])
+        diff = past_dist_int - current_dist_int
         diff_str = f"{diff:+}m" if diff != 0 else "±0m"
-        race_url = f"https://race.netkeiba.com/race/result.html?race_id={info['id']}&rf=race_list"
         
-        header = f"・{info['date']} {info['name']} ({diff_str})"
-        url_line = f"URL：{race_url}"
+        # Netkeiba URL生成 (Yahoo ID "2608..." -> Netkeiba "202608...")
+        # 2000年以降前提
+        nk_full_id = "20" + info["id"]
+        nk_url = f"https://race.netkeiba.com/race/result.html?race_id={nk_full_id}&rf=race_list"
         
-        horse_results = []
-        for h in battle["horses"]:
-            horse_results.append(f"{h['rank']}着{h['name']}")
+        # フォーマット構築
+        # ・2026年1月5日 未勝利 ダ1900m(±0m)
+        header = f"・{info['date'].replace(' ', '')} {info['name']} {info['dist_str']}({diff_str})"
+        url_line = f"URL：{nk_url}"
         
-        results_line = "着順：" + "　".join(horse_results)
+        # 着順：4着フィサブロス　5着テスタヴェローチェ
+        res_str_list = [f"{r['rank']}着{r['name']}" for r in results]
+        res_line = "着順：" + "　".join(res_str_list)
         
         output_lines.append(header)
         output_lines.append(url_line)
-        output_lines.append(results_line)
+        output_lines.append(res_line)
         output_lines.append("")
         
     return "\n".join(output_lines)
@@ -726,9 +819,8 @@ def run_batch_prediction(jobs_config):
                 interview_data = fetch_zenkoso_interview(driver, race_id)
                 chokyo_data = fetch_keibabook_chokyo(driver, race_id)
                 
-                # 4. Netkeibaデータ
-                horse_name_map = {u: d["name"] for u, d in danwa_data.items()}
-                nk_data = fetch_netkeiba_data(driver, year, kai, place, day, race_num_str, horse_name_map)
+                # 4. Netkeibaデータ（近走指数用）
+                nk_data = fetch_netkeiba_data(driver, year, kai, place, day, race_num_str)
                 
                 lines = []
                 for umaban in sorted(danwa_data.keys(), key=int):
@@ -755,8 +847,9 @@ def run_batch_prediction(jobs_config):
                     )
                     lines.append(line)
 
-                # 5. 対戦表生成（Python側で保持）
-                battle_matrix_text = generate_battle_matrix(nk_data, extract_race_info(race_title).get("distance", ""))
+                # 5. 対戦表生成（Yahoo!スポーツナビから取得）
+                current_dist_str = extract_race_info(race_title).get("distance", "")
+                battle_matrix_text = fetch_yahoo_matrix_data(driver, year, place, kai, day, race_num_str, current_dist_str)
 
                 # AIへの入力プロンプト（対戦表は含めない）
                 full_prompt = f"■レース情報\n{race_title}\n\n■各馬詳細\n" + "\n".join(lines)

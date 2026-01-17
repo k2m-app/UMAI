@@ -133,7 +133,7 @@ def render_copy_button(text: str, label: str, dom_id: str):
 
 
 # ==================================================
-# スピード指数（基本能力の偏差値化）
+# スピード指数（偏差値算出 → 35点満点へ変換）
 # ==================================================
 def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.8, w_avg: float = 1.2) -> dict:
     raw_scores = {}
@@ -166,9 +166,19 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
         else:
             hensachi = 50.0 + 10.0 * (raw - mean) / std
         
+        # 【修正ポイント】偏差値を35点満点スケールに変換する
+        # 偏差値30以下は0点、偏差値70以上は35点(満点)となるように調整
+        # 計算式: (偏差値 - 30) * 0.875
+        # 例: 偏差値50 -> 17.5点 / 偏差値70 -> 35.0点
+        
+        score_35 = (hensachi - 30) * 0.875
+        
+        # 範囲を0〜35に制限（クリッピング）
+        score_35 = max(0.0, min(35.0, score_35))
+
         out[umaban] = {
             "raw_ability": round(raw, 2),
-            "speed_index": round(hensachi, 1)
+            "speed_index": round(score_35, 1) # ここには35点満点の値が入る
         }
 
     return out
@@ -832,7 +842,7 @@ def run_batch_prediction(jobs_config):
                     bias = calculate_baba_bias(int(d["waku"]) if d["waku"].isdigit() else 0, race_title)
                     
                     sp_val = sm.get("speed_index", "-")
-                    sp_str = f"スピード指数(偏差値):{sp_val}"
+                    sp_str = f"スピード指数:{sp_val}/35点" # AIに分かりやすく表記
                     
                     kinsou_idx = n.get("kinsou_index", 0.0)
                     fac_str = f"F:{c.get('fac_deashi','-')}/{c.get('fac_kettou','-')}" if is_shinba else f"F:{c.get('fac_crs','-')}/{c.get('fac_dis','-')}"

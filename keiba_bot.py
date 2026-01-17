@@ -564,8 +564,7 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map)
                     rank_int = int(re.sub(r"\D", "", rank))
                     
                     # --- 近走指数用データ蓄積 ---
-                    # ① 通常点: 3着以内なら3点 (後でminをとる) -> 元のロジック維持
-                    # ② ボーナス計算
+                    # ① ボーナス計算 (通過順による巻き返し)
                     bonus = calculate_passing_order_bonus(passing_order, rank_int)
                     valid_runs.append({"rank_int": rank_int, "bonus": bonus})
                     
@@ -582,29 +581,21 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num, horse_name_map)
 
                 except: pass
         
-        # 近走指数計算
-        # 基本点: 3着以内回数 * 3 (MAX 9) ※元のロジックが sum(3 for...) だったのでそれに合わせるが
-        # ここでは「着順が良い」ことの評価と「巻き返し」の評価を合わせる
+        # 近走指数計算 (修正箇所)
+        # 基本点: 5着以内回数 * 1 (MAX 3.0)
+        base_score = sum(1.0 for r in valid_runs if r["rank_int"] <= 5)
         
-        # 元のロジック: sum(3 for r in valid_runs if r["rank_int"] <= 3) -> 最大9点
-        base_score = sum(3 for r in valid_runs if r["rank_int"] <= 3)
-        
-        # ボーナスの最大値を加算（1レースでも凄まじい巻き返しがあれば評価）
+        # ボーナスの最大値を加算
         max_bonus = max([r["bonus"] for r in valid_runs], default=0.0)
         
-        final_index = float(min(base_score + max_bonus, 10.0)) # 上限10でキャップする場合
-        # ※もしボーナスで10を超えてアピールしたい場合はキャップを外しても良いですが、
-        # 元のコードに合わせて一旦 min(..., 10) としておきます。
-        # ただしボーナス8点が入るとすぐにカンストするので、上限を少し解放するか、
-        # あるいは「指数」として扱うならそのまま足しても良いです。
-        # ここでは「最大値10の指数」という前提を少し緩め、ボーナス分は素直に乗せます(ただし表示等の都合で調整)
-        
         final_index_val = base_score + max_bonus
+        # 上限を10.0でキャップする場合（必要に応じて外してください）
+        final_index = float(min(final_index_val, 10.0))
         
         data[umaban] = {
             "jockey": jockey, 
             "past": past_str_list, 
-            "kinsou_index": final_index_val,
+            "kinsou_index": final_index,
             "history_raw": history_raw_data # 対戦表生成用に保持
         }
     return data

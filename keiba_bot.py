@@ -133,7 +133,7 @@ def render_copy_button(text: str, label: str, dom_id: str):
 
 
 # ==================================================
-# スピード指数（偏差値算出 → 35点満点へ変換）
+# スピード指数（1位を35点満点とした相対評価へ変更）
 # ==================================================
 def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.8, w_avg: float = 1.2) -> dict:
     raw_scores = {}
@@ -141,6 +141,8 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
         last = _safe_int(d.get("sp_last"), 0)
         two = _safe_int(d.get("sp_2"), 0)
         thr = _safe_int(d.get("sp_3"), 0)
+        
+        # 有効な指数（0より大きい値）のみ抽出
         vals = [v for v in [last, two, thr] if v > 0]
         if not vals:
             continue
@@ -149,36 +151,30 @@ def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.
         max_v = max(vals)
         
         denom = (w_max + w_last + w_avg)
+        # 加重平均で「素点」を算出
         raw = (max_v * w_max + last * w_last + avg * w_avg) / denom
         raw_scores[umaban] = raw
 
     if not raw_scores:
         return {}
 
-    values = list(raw_scores.values())
-    mean = sum(values) / len(values)
-    std = math.sqrt(sum((v - mean) ** 2 for v in values) / len(values)) if len(values) > 1 else 0
+    # 全頭の中で最も高い素点を取得（これを35点満点の基準とする）
+    max_raw = max(raw_scores.values())
 
     out = {}
     for umaban, raw in raw_scores.items():
-        if std == 0:
-            hensachi = 50.0
+        # 【修正ロジック】
+        # 偏差値計算を廃止し、トップの馬を基準(35点)とした比率でスコア化
+        # 計算式: (その馬の素点 / 最高素点) * 35
+        
+        if max_raw > 0:
+            score_35 = (raw / max_raw) * 35.0
         else:
-            hensachi = 50.0 + 10.0 * (raw - mean) / std
+            score_35 = 0.0
         
-        # 【修正ポイント】偏差値を35点満点スケールに変換する
-        # 偏差値30以下は0点、偏差値70以上は35点(満点)となるように調整
-        # 計算式: (偏差値 - 30) * 0.875
-        # 例: 偏差値50 -> 17.5点 / 偏差値70 -> 35.0点
-        
-        score_35 = (hensachi - 30) * 0.875
-        
-        # 範囲を0〜35に制限（クリッピング）
-        score_35 = max(0.0, min(35.0, score_35))
-
         out[umaban] = {
             "raw_ability": round(raw, 2),
-            "speed_index": round(score_35, 1) # ここには35点満点の値が入る
+            "speed_index": round(score_35, 1)  # 1位は必ず35.0、他はそれ以下の数値になる
         }
 
     return out

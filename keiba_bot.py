@@ -783,7 +783,11 @@ def stream_dify_workflow(full_text: str):
 # ==================================================
 # Main Execution (Batch)
 # ==================================================
-def run_batch_prediction(jobs_config):
+def run_batch_prediction(jobs_config, mode="ai"):
+    """
+    mode="ai"   : Yahoo対戦表取得あり、Difyへ送信してAI予想
+    mode="info" : Yahoo対戦表なし、Dify送信なし、生データをそのまま表示
+    """
     full_output_log = ""
     for job_idx, job in enumerate(jobs_config):
         driver = build_driver()
@@ -838,7 +842,7 @@ def run_batch_prediction(jobs_config):
                     bias = calculate_baba_bias(int(d["waku"]) if d["waku"].isdigit() else 0, race_title)
                     
                     sp_val = sm.get("speed_index", "-")
-                    sp_str = f"スピード指数:{sp_val}/35点" # AIに分かりやすく表記
+                    sp_str = f"スピード指数:{sp_val}/35点"
                     
                     kinsou_idx = n.get("kinsou_index", 0.0)
                     fac_str = f"F:{c.get('fac_deashi','-')}/{c.get('fac_kettou','-')}" if is_shinba else f"F:{c.get('fac_crs','-')}/{c.get('fac_dis','-')}"
@@ -853,28 +857,46 @@ def run_batch_prediction(jobs_config):
                     )
                     lines.append(line)
 
-                # 5. 対戦表生成（Yahoo!スポーツナビから取得）
-                current_dist_str = extract_race_info(race_title).get("distance", "")
-                battle_matrix_text = fetch_yahoo_matrix_data(driver, year, place, kai, day, race_num_str, current_dist_str)
-
-                # AIへの入力プロンプト（対戦表は含めない）
-                full_prompt = f"■レース情報\n{race_title}\n\n■各馬詳細\n" + "\n".join(lines)
+                # ベースとなるデータテキスト（プロンプトの元）
+                raw_data_block = f"■レース情報\n{race_title}\n\n■各馬詳細\n" + "\n".join(lines)
                 
-                status.text("AI分析中...")
                 result_area = st.empty()
-                ai_output = ""
+                final_output = ""
+
+                # --- 分岐処理 ---
+                if mode == "info":
+                    # 【情報取得モード】
+                    # DifyもYahoo対戦表もスキップし、作成したデータをそのまま表示
+                    status.text("データ表示中 (Difyスキップ)")
+                    final_output = raw_data_block
+                    
+                    # そのまま表示
+                    result_area.text_area(f"{r}R データ", final_output, height=400)
+
+                else:
+                    # 【AI予想モード】 (デフォルト)
+                    # 5. 対戦表生成（Yahoo!スポーツナビから取得）
+                    current_dist_str = extract_race_info(race_title).get("distance", "")
+                    battle_matrix_text = fetch_yahoo_matrix_data(driver, year, place, kai, day, race_num_str, current_dist_str)
+
+                    # AIへの入力プロンプト
+                    full_prompt = raw_data_block
+                    
+                    status.text("AI分析中...")
+                    ai_output = ""
+                    
+                    # Difyからのストリーミング回答
+                    for chunk in stream_dify_workflow(full_prompt):
+                        ai_output += chunk
+                        result_area.markdown(ai_output + "▌")
+                    
+                    # AI回答後に対戦表を結合
+                    final_output = ai_output + "\n\n" + battle_matrix_text
+                    
+                    # 最終結果表示
+                    result_area.markdown(final_output)
                 
-                # Difyからのストリーミング回答を表示
-                for chunk in stream_dify_workflow(full_prompt):
-                    ai_output += chunk
-                    result_area.markdown(ai_output + "▌")
-                
-                # AI回答後に対戦表を結合
-                final_output = ai_output + "\n\n" + battle_matrix_text
-                
-                # 最終結果表示
-                result_area.markdown(final_output)
-                
+                # --- 共通終了処理 ---
                 # ログとコピーボタンにも結合データを入れる
                 full_output_log += f"\n{race_title}\n{final_output}\n"
                 render_copy_button(final_output, f"{r}Rコピー", f"cp_{base_id}_{r}")

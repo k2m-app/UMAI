@@ -165,12 +165,21 @@ else:
         msg += f"- 【{job['place_name']}】 {job['day']}日目 : {job['races']}\n"
     st.text(msg)
 
-if st.button("AI予想を開始する", type="primary", disabled=btn_disabled):
+# ボタンを2つ配置（AI予想 / 情報収集のみ）
+col_btn1, col_btn2 = st.columns(2)
+
+# 1. AI予想モード
+if col_btn1.button("AI予想を開始する", type="primary", disabled=btn_disabled):
     st.session_state["combined_output"] = ""
-    
-    # バッチ実行呼び出し
-    result_text = keiba_bot.run_batch_prediction(jobs_config)
-    
+    # mode="ai" を指定してDify経由の予想を実行
+    result_text = keiba_bot.run_batch_prediction(jobs_config, mode="ai")
+    st.session_state["combined_output"] = result_text
+
+# 2. 情報取得モード（Difyなし・対戦表なし）
+if col_btn2.button("情報を取得する（Difyなし・対戦表なし）", disabled=btn_disabled):
+    st.session_state["combined_output"] = ""
+    # mode="info" を指定して生データのみ取得
+    result_text = keiba_bot.run_batch_prediction(jobs_config, mode="info")
     st.session_state["combined_output"] = result_text
 
 # ==================================================

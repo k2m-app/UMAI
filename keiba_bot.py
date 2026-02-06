@@ -197,10 +197,16 @@ def build_driver() -> webdriver.Chrome:
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1280,2200")
+    # ★追加: ページ読み込み戦略を 'eager' (DOM完了で実行) に設定
+    options.page_load_strategy = 'eager'
     options.add_argument("--lang=ja-JP")
-    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     driver = webdriver.Chrome(options=options)
-    driver.set_page_load_timeout(60)
+    # タイムアウト時間を少し短くし、その分リトライさせる方が効率的です
+    driver.set_page_load_timeout(30) 
     return driver
 
 def login_keibabook(driver: webdriver.Chrome) -> None:
@@ -469,51 +475,113 @@ def stream_dify_workflow(full_text: str):
 def run_batch_prediction(jobs_config, mode="ai"):
     full_output_log = ""
     for job_idx, job in enumerate(jobs_config):
-        driver = build_driver()
-        try:
-            st.info(f"[{job_idx+1}/{len(jobs_config)}] ログイン処理中...")
-            login_keibabook(driver)
-            year, kai, place, day, place_name = job["year"], str(job["kai"]).zfill(2), str(job["place"]).zfill(2), str(job["day"]).zfill(2), job["place_name"]
-            base_id = f"{year}{kai}{place}{day}"
-            st.markdown(f"## 🏁 {place_name}開催"); full_output_log += f"\n\n--- {place_name} ---\n"
-            for r in sorted(job["races"]):
-                race_num_str = f"{r:02}"; race_id = base_id + race_num_str
-                st.markdown(f"### {place_name} {r}R")
-                status = st.empty(); status.text("データ収集中...")
-                header_info, danwa_data = fetch_keibabook_danwa(driver, race_id)
-                if not danwa_data: st.error(f"データ取得失敗: {race_id}"); continue
-                race_title = header_info.get("header_text", "")
-                is_shinba = any(x in race_title for x in ["新馬", "メイクデビュー"])
-                cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
-                speed_metrics = compute_speed_metrics(cpu_data)
-                interview_data = fetch_zenkoso_interview(driver, race_id)
-                chokyo_data = fetch_keibabook_chokyo(driver, race_id)
-                nk_data = fetch_netkeiba_data(driver, year, kai, place, day, race_num_str)
-                lines = []
-                for umaban in sorted(danwa_data.keys(), key=int):
-                    d, sm, n, c = danwa_data[umaban], speed_metrics.get(umaban, {}), nk_data.get(umaban, {}), cpu_data.get(umaban, {})
-                    k, bias = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"}), calculate_baba_bias(int(d["waku"]) if d["waku"].isdigit() else 0, race_title)
-                    sp_str = f"スピード指数:{sm.get('speed_index', '-')}/35点"
-                    fac_str = f"F:{c.get('fac_deashi','-')}/{c.get('fac_kettou','-')}" if is_shinba else f"F:{c.get('fac_crs','-')}/{c.get('fac_dis','-')}"
-                    lines.append(f"▼{d['waku']}枠{umaban}番 {d['name']} (騎手:{n.get('jockey','-')})\n【データ】{sp_str} バイアス:{bias['total']} 近走指数:{n.get('kinsou_index', 0.0):.1f} {fac_str}\n【厩舎】{d['danwa']}\n【前走】{interview_data.get(umaban, 'なし')}\n【調教】{k['tanpyo']} \n{k['details']}\n【近走】{' / '.join(n.get('past', []))}\n")
-                raw_data_block = f"■レース情報\n{race_title}\n\n■各馬詳細\n" + "\n".join(lines)
-                result_area, ai_output = st.empty(), ""
-                if mode == "info":
-                    ai_output = raw_data_block; result_area.text_area(f"{r}R データ", ai_output, height=400)
-                    battle_matrix_text = ""
+        
+        # --- ★ここからリトライループの開始 ---
+        max_retries = 2
+        for attempt in range(max_retries):
+            driver = build_driver()
+            try:
+                st.info(f"[{job_idx+1}/{len(jobs_config)}] ログイン処理中 (試行 {attempt+1}/{max_retries})...")
+                login_keibabook(driver)
+                
+                year = job["year"]
+                kai = str(job["kai"]).zfill(2)
+                place = str(job["place"]).zfill(2)
+                day = str(job["day"]).zfill(2)
+                place_name = job["place_name"]
+                base_id = f"{year}{kai}{place}{day}"
+                
+                st.markdown(f"## 🏁 {place_name}開催")
+                full_output_log += f"\n\n--- {place_name} ---\n"
+
+                # 指定されたレースをすべて処理するループ
+                for r in sorted(job["races"]):
+                    race_num_str = f"{r:02}"
+                    race_id = base_id + race_num_str
+                    st.markdown(f"### {place_name} {r}R")
+                    status = st.empty()
+                    status.text("データ収集中...")
+                    
+                    header_info, danwa_data = fetch_keibabook_danwa(driver, race_id)
+                    if not danwa_data:
+                        st.error(f"データ取得失敗: {race_id}")
+                        continue
+                    
+                    race_title = header_info.get("header_text", "")
+                    is_shinba = any(x in race_title for x in ["新馬", "メイクデビュー"])
+                    
+                    cpu_data = fetch_keibabook_cpu_data(driver, race_id, is_shinba=is_shinba)
+                    speed_metrics = compute_speed_metrics(cpu_data)
+                    interview_data = fetch_zenkoso_interview(driver, race_id)
+                    chokyo_data = fetch_keibabook_chokyo(driver, race_id)
+                    nk_data = fetch_netkeiba_data(driver, year, kai, place, day, race_num_str)
+                    
+                    lines = []
+                    for umaban in sorted(danwa_data.keys(), key=int):
+                        d = danwa_data[umaban]
+                        sm = speed_metrics.get(umaban, {})
+                        n = nk_data.get(umaban, {})
+                        c = cpu_data.get(umaban, {})
+                        k = chokyo_data.get(umaban, {"tanpyo": "-", "details": "-"})
+                        bias = calculate_baba_bias(int(d["waku"]) if d["waku"].isdigit() else 0, race_title)
+                        
+                        sp_val = sm.get("speed_index", "-")
+                        sp_str = f"スピード指数:{sp_val}/35点"
+                        kinsou_idx = n.get("kinsou_index", 0.0)
+                        fac_str = f"F:{c.get('fac_deashi','-')}/{c.get('fac_kettou','-')}" if is_shinba else f"F:{c.get('fac_crs','-')}/{c.get('fac_dis','-')}"
+                        
+                        line = (
+                            f"▼{d['waku']}枠{umaban}番 {d['name']} (騎手:{n.get('jockey','-')})\n"
+                            f"【データ】{sp_str} バイアス:{bias['total']} 近走指数:{kinsou_idx:.1f} {fac_str}\n"
+                            f"【厩舎】{d['danwa']}\n"
+                            f"【前走】{interview_data.get(umaban, 'なし')}\n"
+                            f"【調教】{k['tanpyo']} \n{k['details']}\n"
+                            f"【近走】{' / '.join(n.get('past', []))}\n"
+                        )
+                        lines.append(line)
+
+                    raw_data_block = f"■レース情報\n{race_title}\n\n■各馬詳細\n" + "\n".join(lines)
+                    result_area = st.empty()
+                    ai_output = ""
+
+                    if mode == "info":
+                        ai_output = raw_data_block
+                        result_area.text_area(f"{r}R データ", ai_output, height=400)
+                        battle_matrix_text = ""
+                    else:
+                        status.text("AI分析中...")
+                        for chunk in stream_dify_workflow(raw_data_block):
+                            ai_output += chunk
+                            result_area.markdown(ai_output + "▌")
+                        
+                        horse_evals = parse_dify_evaluation(ai_output)
+                        battle_matrix_text = fetch_yahoo_matrix_data(
+                            driver, year, place, kai, day, race_num_str, 
+                            extract_race_info(race_title).get("distance", ""), 
+                            horse_evals=horse_evals
+                        )
+
+                    final_output = ai_output + "\n\n" + battle_matrix_text
+                    result_area.markdown(final_output)
+                    
+                    full_output_log += f"\n{race_title}\n{final_output}\n"
+                    render_copy_button(final_output, f"{r}Rコピー", f"cp_{base_id}_{r}")
+                    status.success("完了")
+
+                # --- ★全てのレース(1R~3R等)が正常に終われば、リトライループを抜ける ---
+                break
+
+            except Exception as e:
+                # タイムアウトなどのエラーが発生した場合
+                if attempt < max_retries - 1:
+                    st.warning(f"接続エラーのため再試行します... ({e})")
+                    driver.quit()
+                    time.sleep(2)
+                    continue # 次の attempt (試行) へ
                 else:
-                    status.text("AI分析中...")
-                    for chunk in stream_dify_workflow(raw_data_block):
-                        ai_output += chunk; result_area.markdown(ai_output + "▌")
-                    # Difyの回答から評価を抽出
-                    horse_evals = parse_dify_evaluation(ai_output)
-                    # 評価を渡して対戦表生成
-                    battle_matrix_text = fetch_yahoo_matrix_data(driver, year, place, kai, day, race_num_str, extract_race_info(race_title).get("distance", ""), horse_evals=horse_evals)
-                final_output = ai_output + "\n\n" + battle_matrix_text
-                result_area.markdown(final_output)
-                full_output_log += f"\n{race_title}\n{final_output}\n"
-                render_copy_button(final_output, f"{r}Rコピー", f"cp_{base_id}_{r}")
-                status.success("完了")
-        except Exception as e: st.error(f"エラー: {e}")
-        finally: driver.quit()
+                    st.error(f"エラーが発生しました: {e}")
+            finally:
+                driver.quit()
+        # --- ★リトライループ終了 ---
+
     return full_output_log

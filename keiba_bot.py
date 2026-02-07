@@ -101,8 +101,6 @@ def extract_distance_int(dist_str: str) -> int:
 def parse_dify_evaluation(ai_text: str) -> dict:
     """ DifyのMarkdownテーブルから {馬名: 評価ランク} の辞書を作成 """
     eval_map = {}
-    # 正規表現で | 馬番 | 馬名(騎手) | ... | 評価 | の行を抽出
-    # 馬名に全角カッコなどが含まれるケースを考慮
     pattern = r'\|\s*\d+\s*\|\s*([^|（\(]+)[^|]*\|\s*[^|]*\|\s*[^|]*\|\s*([SABCDEFG])\s*\|'
     matches = re.finditer(pattern, ai_text)
     for m in matches:
@@ -197,7 +195,6 @@ def build_driver() -> webdriver.Chrome:
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1280,2200")
-    # ★追加: ページ読み込み戦略を 'eager' (DOM完了で実行) に設定
     options.page_load_strategy = 'eager'
     options.add_argument("--lang=ja-JP")
     options.add_argument(
@@ -205,7 +202,6 @@ def build_driver() -> webdriver.Chrome:
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
     driver = webdriver.Chrome(options=options)
-    # タイムアウト時間を少し短くし、その分リトライさせる方が効率的です
     driver.set_page_load_timeout(30) 
     return driver
 
@@ -376,9 +372,15 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
         if not umaban: continue
         jockey_td = tr.find("td", class_="Jockey")
         jockey = _clean_text_ja(jockey_td.get_text(strip=True)) if jockey_td else "不明"
+        
         past_str_list, valid_runs = [], []
-        for td in tr.find_all("td", class_="Past")[:3]:
-            if "Rest" in td.get("class", []): past_str_list.append("(放牧/休養)")
+        prev_jockey = None # 前走騎手格納用
+
+        # Pastカラムを走査 (最大3走)
+        past_tds = tr.find_all("td", class_="Past")[:3]
+        for idx, td in enumerate(past_tds):
+            if "Rest" in td.get("class", []): 
+                past_str_list.append("(放牧/休養)")
             else:
                 d01, d02 = td.find("div", class_="Data01"), td.find("div", class_="Data02")
                 date_place = _clean_text_ja(d01.get_text(strip=True)) if d01 else ""
@@ -389,14 +391,39 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
                 if d06:
                     match = re.match(r'^([\d\-]+)', d06.get_text(strip=True))
                     if match: passing_order = match.group(1)
+                
+                # --- ★追加箇所: 前走(index 0)のData03から騎手名を抽出 ---
+                if idx == 0:
+                    d03 = td.find("div", class_="Data03")
+                    if d03:
+                        d03_text = _clean_text_ja(d03.get_text(strip=True))
+                        # Data03形式例: "18頭 2番 14人 坂井瑠星 58.0"
+                        # 人気(人)と斤量(小数)の間にある文字列を抽出
+                        j_match = re.search(r'\d+人\s+(.+?)\s+\d+\.\d', d03_text)
+                        if j_match:
+                            prev_jockey = j_match.group(1).strip()
+                        else:
+                            # 正規表現で取れない場合の予備：空白区切りの後ろから2番目などを想定
+                            parts = d03_text.split()
+                            if len(parts) >= 2:
+                                prev_jockey = parts[-2]
+                # ----------------------------------------------------
+
                 past_str_list.append(f"[{date_place} {race_name_dist} {passing_order}→{rank}着]")
                 try:
                     rank_int = int(re.sub(r"\D", "", rank))
                     valid_runs.append({"rank_int": rank_int, "bonus": calculate_passing_order_bonus(passing_order, rank_int)})
                 except: pass
+        
         base_score = sum(1.0 for r in valid_runs if r["rank_int"] <= 5)
         max_bonus = max([r["bonus"] for r in valid_runs], default=0.0)
-        data[umaban] = {"jockey": jockey, "past": past_str_list, "kinsou_index": float(min(base_score + max_bonus, 10.0))}
+        
+        data[umaban] = {
+            "jockey": jockey, 
+            "prev_jockey": prev_jockey, # 戻り値に追加
+            "past": past_str_list, 
+            "kinsou_index": float(min(base_score + max_bonus, 10.0))
+        }
     return data
 
 # ==================================================
@@ -441,7 +468,6 @@ def fetch_yahoo_matrix_data(driver, year, place, kai, day, race_num, current_dis
         diff = extract_distance_int(info["dist_str"]) - current_dist_int
         res_str_list = []
         for r in results:
-            # Difyの評価があれば付与
             grade = horse_evals.get(r['name'], "") if horse_evals else ""
             suffix = f"({grade})" if grade else ""
             res_str_list.append(f"{r['rank']}着{r['name']}{suffix}")
@@ -530,8 +556,18 @@ def run_batch_prediction(jobs_config, mode="ai"):
                         kinsou_idx = n.get("kinsou_index", 0.0)
                         fac_str = f"F:{c.get('fac_deashi','-')}/{c.get('fac_kettou','-')}" if is_shinba else f"F:{c.get('fac_crs','-')}/{c.get('fac_dis','-')}"
                         
+                        # --- ★追加箇所: 騎手乗り替わり表示ロジック ---
+                        current_jockey = n.get('jockey', '-')
+                        prev_jockey = n.get('prev_jockey', None)
+                        
+                        if prev_jockey and prev_jockey != current_jockey:
+                            jockey_disp = f"騎手:{current_jockey}←{prev_jockey}"
+                        else:
+                            jockey_disp = f"騎手:{current_jockey}"
+                        # ----------------------------------------
+
                         line = (
-                            f"▼{d['waku']}枠{umaban}番 {d['name']} (騎手:{n.get('jockey','-')})\n"
+                            f"▼{d['waku']}枠{umaban}番 {d['name']} ({jockey_disp})\n"
                             f"【データ】{sp_str} バイアス:{bias['total']} 近走指数:{kinsou_idx:.1f} {fac_str}\n"
                             f"【厩舎】{d['danwa']}\n"
                             f"【前走】{interview_data.get(umaban, 'なし')}\n"

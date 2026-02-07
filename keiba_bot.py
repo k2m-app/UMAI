@@ -370,8 +370,21 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
             txt = re.sub(r"\D", "", td.get_text(strip=True))
             if txt: umaban = txt; break
         if not umaban: continue
+        
+        # --- ★修正: 騎手名を<a>タグから正確に取得 ---
         jockey_td = tr.find("td", class_="Jockey")
-        jockey = _clean_text_ja(jockey_td.get_text(strip=True)) if jockey_td else "不明"
+        jockey = "不明"
+        if jockey_td:
+            a_tag = jockey_td.find("a")
+            if a_tag:
+                jockey = _clean_text_ja(a_tag.get_text(strip=True))
+            else:
+                # aタグが無い場合のフォールバック（テキスト全体から抽出）
+                # 通常はaタグがあるはずだが、万が一のため
+                full_text = jockey_td.get_text(strip=True)
+                # 斤量や性別を除去する簡易処理（数字や特定の文字を除く）
+                jockey = re.sub(r'[0-9\.]+|牡|牝|セ|栗|鹿|芦|黒', '', full_text).strip()
+        # ---------------------------------------------
         
         past_str_list, valid_runs = [], []
         prev_jockey = None # 前走騎手格納用
@@ -392,22 +405,18 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
                     match = re.match(r'^([\d\-]+)', d06.get_text(strip=True))
                     if match: passing_order = match.group(1)
                 
-                # --- ★追加箇所: 前走(index 0)のData03から騎手名を抽出 ---
+                # 前走(index 0)のData03から騎手名を抽出
                 if idx == 0:
                     d03 = td.find("div", class_="Data03")
                     if d03:
                         d03_text = _clean_text_ja(d03.get_text(strip=True))
                         # Data03形式例: "18頭 2番 14人 坂井瑠星 58.0"
-                        # 人気(人)と斤量(小数)の間にある文字列を抽出
                         j_match = re.search(r'\d+人\s+(.+?)\s+\d+\.\d', d03_text)
                         if j_match:
                             prev_jockey = j_match.group(1).strip()
                         else:
-                            # 正規表現で取れない場合の予備：空白区切りの後ろから2番目などを想定
                             parts = d03_text.split()
-                            if len(parts) >= 2:
-                                prev_jockey = parts[-2]
-                # ----------------------------------------------------
+                            if len(parts) >= 2: prev_jockey = parts[-2]
 
                 past_str_list.append(f"[{date_place} {race_name_dist} {passing_order}→{rank}着]")
                 try:
@@ -420,7 +429,7 @@ def fetch_netkeiba_data(driver, year, kai, place, day, race_num):
         
         data[umaban] = {
             "jockey": jockey, 
-            "prev_jockey": prev_jockey, # 戻り値に追加
+            "prev_jockey": prev_jockey, 
             "past": past_str_list, 
             "kinsou_index": float(min(base_score + max_bonus, 10.0))
         }
@@ -556,11 +565,24 @@ def run_batch_prediction(jobs_config, mode="ai"):
                         kinsou_idx = n.get("kinsou_index", 0.0)
                         fac_str = f"F:{c.get('fac_deashi','-')}/{c.get('fac_kettou','-')}" if is_shinba else f"F:{c.get('fac_crs','-')}/{c.get('fac_dis','-')}"
                         
-                        # --- ★追加箇所: 騎手乗り替わり表示ロジック ---
+                        # --- ★修正: 騎手乗り替わり判定ロジック ---
                         current_jockey = n.get('jockey', '-')
                         prev_jockey = n.get('prev_jockey', None)
                         
-                        if prev_jockey and prev_jockey != current_jockey:
+                        # 同一人物判定関数
+                        def is_same_jockey(prev_full, curr_abbr):
+                            if not prev_full or not curr_abbr: return False
+                            p = prev_full.replace(" ", "").replace("　", "")
+                            c = curr_abbr.replace(" ", "").replace("　", "")
+                            # 完全一致の場合
+                            if p == c: return True
+                            # 略称が前走騎手名(フルネーム)の先頭と一致する場合 (例: 原 ← 原優介, 横山武 ← 横山武史)
+                            # 現在の騎手名が1文字以上ある場合のみチェック
+                            if len(c) > 0 and p.startswith(c):
+                                return True
+                            return False
+
+                        if prev_jockey and not is_same_jockey(prev_jockey, current_jockey):
                             jockey_disp = f"騎手:{current_jockey}←{prev_jockey}"
                         else:
                             jockey_disp = f"騎手:{current_jockey}"

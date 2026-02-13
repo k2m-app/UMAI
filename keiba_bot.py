@@ -133,25 +133,73 @@ def render_copy_button(text: str, label: str, dom_id: str):
 # ==================================================
 # 計算・解析ロジック
 # ==================================================
-def compute_speed_metrics(cpu_data: dict, w_max: float = 2.0, w_last: float = 1.8, w_avg: float = 1.2) -> dict:
+def compute_speed_metrics(cpu_data: dict) -> dict:
+    # 重み設定 (合計 10.0)
+    W_RECENT_MAX = 4.0  # 近3走のMAX
+    W_LAST = 3.0        # 前走
+    W_BEST = 2.0        # 自己ベスト
+    W_AVG = 1.0         # 平均
+
     raw_scores = {}
+
     for umaban, d in cpu_data.items():
-        last = _safe_int(d.get("sp_last"), 0)
-        two = _safe_int(d.get("sp_2"), 0)
-        thr = _safe_int(d.get("sp_3"), 0)
-        vals = [v for v in [last, two, thr] if v > 0]
-        if not vals: continue
-        avg = sum(vals) / len(vals)
-        max_v = max(vals)
-        denom = (w_max + w_last + w_avg)
-        raw = (max_v * w_max + last * w_last + avg * w_avg) / denom
-        raw_scores[umaban] = raw
-    if not raw_scores: return {}
+        # 1. データの取り出し
+        val_last = _safe_int(d.get("sp_last"), 0)
+        val_2 = _safe_int(d.get("sp_2"), 0)
+        val_3 = _safe_int(d.get("sp_3"), 0)
+        val_best = _safe_int(d.get("sp_best"), 0)
+
+        # 有効な近走スコア (0より大きいもの)
+        recent_valid = [v for v in [val_last, val_2, val_3] if v > 0]
+
+        # データが全くない場合はスキップ
+        if not recent_valid and val_best == 0:
+            continue
+
+        # 2. 各指標の算出
+        # 近3走MAX
+        recent_max = max(recent_valid) if recent_valid else val_best
+        # 近3走平均
+        recent_avg = sum(recent_valid) / len(recent_valid) if recent_valid else val_best
+        # 前走 (データ欠けの場合は平均で補完)
+        last_score = val_last if val_last > 0 else recent_avg
+        # 自己ベスト (データ欠けの場合は近3走MAXで代用)
+        lifetime_best = val_best if val_best > 0 else recent_max
+
+        # ★重要補正: 「最高」が古すぎる場合のリスクヘッジ
+        # 「自己ベスト」が「近3走MAX」より異常に高い(15以上乖離)場合、
+        # 過去の栄光である可能性が高いため、評価を割り引く
+        if lifetime_best > recent_max + 15:
+            lifetime_best = (lifetime_best + recent_max) / 2
+
+        # 3. 加重平均の計算
+        numerator = (
+            (recent_max * W_RECENT_MAX) +
+            (last_score * W_LAST) +
+            (lifetime_best * W_BEST) +
+            (recent_avg * W_AVG)
+        )
+        denominator = W_RECENT_MAX + W_LAST + W_BEST + W_AVG
+        
+        raw_score = numerator / denominator
+        
+        # ボーナス加点: 「上昇気配」
+        # (3走前 < 2走前 < 前走) と右肩上がりの場合、2%ボーナス
+        if (val_last > val_2 > val_3 > 0):
+            raw_score *= 1.02
+
+        raw_scores[umaban] = raw_score
+
+    if not raw_scores:
+        return {}
+
+    # 4. 相対評価 (レース内トップを35点満点とする)
     max_raw = max(raw_scores.values())
     out = {}
     for umaban, raw in raw_scores.items():
         score_35 = (raw / max_raw) * 35.0 if max_raw > 0 else 0.0
         out[umaban] = {"raw_ability": round(raw, 2), "speed_index": round(score_35, 1)}
+    
     return out
 
 def extract_race_info(race_title: str) -> dict:
@@ -300,40 +348,63 @@ def fetch_keibabook_cpu_data(driver, race_id: str, is_shinba: bool = False):
     driver.get(url)
     try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "main")))
     except: pass
+    
     soup = BeautifulSoup(driver.page_source, "html.parser")
-    data, speed_tbl = {}, soup.find("table", id="cpu_speed_sort_table")
+    data = {}
+    
+    # --- スピード指数テーブルの解析 ---
+    speed_tbl = soup.find("table", id="cpu_speed_sort_table")
     if speed_tbl and speed_tbl.tbody:
         for tr in speed_tbl.tbody.find_all("tr"):
             umaban_td = tr.find("td", class_="umaban")
             if not umaban_td: continue
+            
             umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
             tds = tr.find_all("td")
+            
+            # 列数が足りない場合はスキップ (通常8列以上あるはず)
             if len(tds) < 8: continue
-            def get_v(idx):
-                p = tds[idx].find("p")
-                txt = re.sub(r"\D", "", p.get_text(strip=True)) if p else ""
-                val = int(txt) if txt else 0
-                return val if val < 900 else 0
-            data[umaban] = {"sp_last": get_v(-1), "sp_2": get_v(-2), "sp_3": get_v(-3)}
+            
+            def get_val(idx):
+                txt = tds[idx].get_text(strip=True)
+                # 数値以外を除去してint化
+                val = int(re.sub(r"\D", "", txt)) if re.sub(r"\D", "", txt) else 0
+                return val
+
+            data[umaban] = {
+                "sp_best": get_val(4), # 最高
+                "sp_3":    get_val(5), # 3走前
+                "sp_2":    get_val(6), # 2走前
+                "sp_last": get_val(7)  # 前走
+            }
+
     factor_tbl = None
     for t in soup.find_all("table"):
         cap = t.find("caption")
         if cap and "ファクター" in cap.get_text(): factor_tbl = t; break
+    
     if factor_tbl and factor_tbl.tbody:
         for tr in factor_tbl.tbody.find_all("tr"):
             umaban_td = tr.find("td", class_="umaban")
             if not umaban_td: continue
             umaban = re.sub(r"\D", "", umaban_td.get_text(strip=True))
+            
             tds = tr.find_all("td")
             if len(tds) < 6: continue
+            
             def get_m(idx):
                 p = tds[idx].find("p")
                 return p.get_text(strip=True) if p else "-"
+            
             if umaban not in data: data[umaban] = {}
-            if is_shinba: data[umaban].update({"fac_deashi": get_m(5), "fac_kettou": get_m(6), "fac_ugoki": get_m(8)})
-            else: data[umaban].update({"fac_crs": get_m(5), "fac_dis": get_m(6), "fac_zen": get_m(7)})
+            
+            # 新馬戦かどうかで取得する列を変える
+            if is_shinba:
+                data[umaban].update({"fac_deashi": get_m(5), "fac_kettou": get_m(6), "fac_ugoki": get_m(8)})
+            else:
+                data[umaban].update({"fac_crs": get_m(5), "fac_dis": get_m(6), "fac_zen": get_m(7)})
+                
     return data
-
 # ==================================================
 # Netkeiba & 近走指数
 # ==================================================
